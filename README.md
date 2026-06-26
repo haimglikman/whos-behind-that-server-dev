@@ -1,3 +1,6 @@
+### v1.17.2 — bug fix (server-dev) | Admin: v2.11.1 | Client: v1.13.0
+- Fixed investigate/detect returning 500 — extractJSON now handles JSON arrays (Stage 1 returns an array of pair results, not a single object)
+
 ### v1.17.1 — bug fix (server) | Admin: v2.11.0 | Client: v1.13.0
 - Stage 1 connection detection: switched from Sonnet to Haiku (~75% cheaper per token)
 - Stage 1: batched 4 pairs per call instead of 1 (~75% fewer API calls)
