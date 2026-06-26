@@ -1,3 +1,6 @@
+### v1.17.3 — bug fix (server-dev) | Admin: v2.11.1 | Client: v1.13.0
+- Added detailed error logging to investigate/detect endpoint — surfaces exact API error message and raw response in Render logs for debugging
+
 ### v1.17.2 — bug fix (server-dev) | Admin: v2.11.1 | Client: v1.13.0
 - Fixed investigate/detect returning 500 — extractJSON now handles JSON arrays (Stage 1 returns an array of pair results, not a single object)
 
