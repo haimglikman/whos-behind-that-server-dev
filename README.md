@@ -1,3 +1,6 @@
+### v1.17.5 — bug fix (server-dev) | Admin: v2.11.1 | Client: v1.13.0
+- Fixed investigation 400 error on Hebrew/Arabic/emoji posts — replaced regex-based Unicode sanitization with Buffer-based approach that reliably strips unpaired surrogates at byte level
+
 ### v1.17.4 — bug fix (server-dev) | Admin: v2.11.1 | Client: v1.13.0
 - Fixed investigation failing with 400 error on Hebrew/Arabic/emoji posts — unpaired Unicode surrogates and control characters are now stripped from post text before sending to the API
 
