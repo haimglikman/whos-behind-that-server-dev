@@ -5,6 +5,9 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
+// v1.17.5 — Use Buffer-based unicode sanitization — properly strips unpaired
+//            surrogates from Hebrew/Arabic/emoji text in both detect and synthesize.
+//
 // v1.17.4 — Sanitize post text before sending to API — removes unpaired
 //            Unicode surrogates (emoji, Arabic/Hebrew chars) that caused 400 errors.
 //
@@ -93,7 +96,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '1.17.4';
+const SERVER_VERSION = '1.17.5';
 
 import express from 'express';
 import cors from 'cors';
@@ -563,27 +566,28 @@ app.post('/investigate/detect', async (req, res) => {
     const BATCH_SIZE = 4;
     const allResults = [];
 
+    // Safe string: remove unpaired surrogates and non-printable chars
+    const safe = (s, max) => {
+      if (!s) return '';
+      return Buffer.from(String(s).replace(/[\uD800-\uDFFF]/g, ''), 'utf8')
+        .toString('utf8')
+        .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+        .slice(0, max || 200)
+        .replace(/\n/g, ' ')
+        .trim();
+    };
+
     for (let b = 0; b < pairs.length; b += BATCH_SIZE) {
       const batch = pairs.slice(b, b + BATCH_SIZE);
 
-    // Sanitize text to remove unpaired surrogates and other problematic Unicode
-    function sanitizeText(text) {
-      return (text || '')
-        .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '') // unpaired surrogates
-        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '') // control chars
-        .slice(0, 150)
-        .replace(/\n/g, ' ')
-        .trim();
-    }
-
-    const pairsText = batch.map(([a, bPost], idx) => {
+      const pairsText = batch.map(([a, bPost], idx) => {
         const aDate = a.ts ? new Date(a.ts).toISOString().slice(0,10) : '?';
         const bDate = bPost.ts ? new Date(bPost.ts).toISOString().slice(0,10) : '?';
-        const aExcerpt = sanitizeText(a.postText);
-        const bExcerpt = sanitizeText(bPost.postText);
-        return `PAIR ${idx+1}:
-A: [${aDate}] alignment=${((a.topMatches||[]).slice(0,2).join('+')||'none')} (${a.overallScore}%) | "${aExcerpt}"
-B: [${bDate}] alignment=${((bPost.topMatches||[]).slice(0,2).join('+')||'none')} (${bPost.overallScore}%) | "${bExcerpt}"`;
+        const aExcerpt = safe(a.postText, 150);
+        const bExcerpt = safe(bPost.postText, 150);
+        const aAlign = safe((a.topMatches||[]).slice(0,2).join('+') || 'none', 80);
+        const bAlign = safe((bPost.topMatches||[]).slice(0,2).join('+') || 'none', 80);
+        return `PAIR ${idx+1}:\nA: [${aDate}] alignment=${aAlign} (${a.overallScore||0}%) | "${aExcerpt}"\nB: [${bDate}] alignment=${bAlign} (${bPost.overallScore||0}%) | "${bExcerpt}"`;
       }).join('\n\n');
 
       const prompt = `You are a narrative analyst for Who's Behind That?, focused on the Israeli-Palestinian conflict and Israeli domestic politics.
@@ -681,12 +685,17 @@ app.post('/investigate/synthesize', async (req, res) => {
   if (!ANTHROPIC_KEY) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
   try {
     const clusterPosts = posts.filter(p => cluster.includes(p.scanId));
-    const sanitize = t => (t||'').replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,'').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g,'').slice(0,300).replace(/\n/g,' ').trim();
+    const safe3 = (s, max) => {
+      if (!s) return '';
+      return Buffer.from(String(s).replace(/[\uD800-\uDFFF]/g, ''), 'utf8')
+        .toString('utf8').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+        .slice(0, max || 300).replace(/\n/g, ' ').trim();
+    };
     const postsText = clusterPosts.map((p, i) => {
       const date = p.ts ? new Date(p.ts).toISOString().slice(0,10) : '?';
-      const excerpt = sanitize(p.postText);
-      const alignment = (p.topMatches||[]).slice(0,2).join('+') || 'none';
-      return `POST ${i+1} [${date}] alignment=${alignment} (${p.overallScore}%): "${excerpt}"`;
+      const excerpt = safe3(p.postText, 300);
+      const alignment = safe3((p.topMatches||[]).slice(0,2).join('+') || 'none', 80);
+      return `POST ${i+1} [${date}] alignment=${alignment} (${p.overallScore||0}%): "${excerpt}"`;
     }).join('\n\n');
 
     const prompt = `Narrative analyst for Who's Behind That? (Israeli-Palestinian conflict / Israeli politics).
