@@ -1,3 +1,6 @@
+### v1.17.4 — bug fix (server-dev) | Admin: v2.11.1 | Client: v1.13.0
+- Fixed investigation failing with 400 error on Hebrew/Arabic/emoji posts — unpaired Unicode surrogates and control characters are now stripped from post text before sending to the API
+
 ### v1.17.3 — bug fix (server-dev) | Admin: v2.11.1 | Client: v1.13.0
 - Added detailed error logging to investigate/detect endpoint — surfaces exact API error message and raw response in Render logs for debugging
 
