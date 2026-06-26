@@ -5,7 +5,9 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
-// v1.17.2 — Fixed extractJSON to handle JSON arrays (was breaking Stage 1
+// v1.17.3 — Better error logging in investigate/detect to surface root cause.
+//
+// v1.17.2 — Fixed extractJSON to handle JSON arrays.
 //            investigation detection which returns an array of pair results).
 //
 // v1.17.1 — Optimized investigation token usage.
@@ -88,7 +90,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '1.17.2';
+const SERVER_VERSION = '1.17.3';
 
 import express from 'express';
 import cors from 'cors';
@@ -598,10 +600,21 @@ Respond ONLY with a JSON array, one object per pair, in order:
           messages: [{ role: 'user', content: prompt }]
         })
       });
-      if (!response.ok) throw new Error(`API error: ${response.status}`);
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => ({}));
+        console.error('Haiku API error:', response.status, JSON.stringify(errBody));
+        throw new Error(`API error ${response.status}: ${errBody.error?.message || 'unknown'}`);
+      }
       const data = await response.json();
       const raw = data.content.filter(c => c.type === 'text').map(c => c.text || '').join('').trim();
-      const batchResults = extractJSON(raw);
+      if (!raw) throw new Error('Empty response from API');
+      let batchResults;
+      try {
+        batchResults = extractJSON(raw);
+      } catch(parseErr) {
+        console.error('JSON parse error, raw response:', raw.slice(0, 500));
+        throw new Error('Failed to parse API response: ' + parseErr.message);
+      }
       const totalTokens = { input: data.usage?.input_tokens || 0, output: data.usage?.output_tokens || 0 };
 
       // Map batch results back to their pairs
