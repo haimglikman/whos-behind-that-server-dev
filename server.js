@@ -5,7 +5,10 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
-// v1.17.1 — Optimized investigation token usage: Stage 1 now uses Haiku,
+// v1.17.2 — Fixed extractJSON to handle JSON arrays (was breaking Stage 1
+//            investigation detection which returns an array of pair results).
+//
+// v1.17.1 — Optimized investigation token usage.
 //            batches 4 pairs per call, and uses trimmed prompts (~75% cost
 //            reduction vs v1.17.0). Stage 2 prompt also trimmed.
 //
@@ -85,7 +88,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '1.17.1';
+const SERVER_VERSION = '1.17.2';
 
 import express from 'express';
 import cors from 'cors';
@@ -1543,11 +1546,15 @@ Respond ONLY with valid JSON:
 function extractJSON(text) {
   // Strip markdown fences
   let s = text.replace(/```json|```/g, '').trim();
-  // Find first { and last } to handle preamble/postamble text
-  const start = s.indexOf('{');
-  const end = s.lastIndexOf('}');
-  if (start !== -1 && end !== -1 && end > start) {
-    s = s.slice(start, end + 1);
+  // Handle arrays starting with [
+  const arrStart = s.indexOf('[');
+  const objStart = s.indexOf('{');
+  if (arrStart !== -1 && (objStart === -1 || arrStart < objStart)) {
+    const end = s.lastIndexOf(']');
+    if (end !== -1) s = s.slice(arrStart, end + 1);
+  } else if (objStart !== -1) {
+    const end = s.lastIndexOf('}');
+    if (end !== -1) s = s.slice(objStart, end + 1);
   }
   return JSON.parse(s);
 }
