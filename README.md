@@ -1,3 +1,8 @@
+### v1.18.1 (server-dev) | Admin: v2.12.1 | Client: v1.14.1
+- synthesize now returns postSummaries — one-liner narrative summary per post in cluster
+- post_summaries column added to clusters DB table
+- clusters/save and clusters/list updated to store and return postSummaries
+
 ### v1.18.0 (server-dev) | Admin: v2.12.0 | Client: v1.14.0
 - New clusters DB table — stores investigation results persistently
 - New POST /clusters/save — saves a cluster with name, synopsis, entity, connection type, post IDs
