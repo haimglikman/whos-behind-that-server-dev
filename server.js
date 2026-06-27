@@ -5,7 +5,11 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
-// v1.17.5 — Use Buffer-based unicode sanitization — properly strips unpaired
+// v1.18.0 — Clusters history: new `clusters` DB table, POST /clusters/save,
+//            GET /clusters/list. Cluster IDs generated client-side same format
+//            as post IDs (WBT-CLU-...).
+//
+// v1.17.5 — Buffer-based unicode sanitization.
 //            surrogates from Hebrew/Arabic/emoji text in both detect and synthesize.
 //
 // v1.17.4 — Sanitize post text before sending to API — removes unpaired
@@ -96,7 +100,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '1.17.5';
+const SERVER_VERSION = '1.18.0';
 
 import express from 'express';
 import cors from 'cors';
@@ -191,12 +195,74 @@ async function initDB() {
         url TEXT
       );
     `);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS clusters (
+        id TEXT PRIMARY KEY,
+        ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        cluster_name TEXT,
+        synopsis TEXT,
+        dominant_entity TEXT,
+        connection_type TEXT,
+        frame TEXT,
+        event TEXT,
+        post_ids TEXT[],
+        post_count INTEGER,
+        source TEXT DEFAULT 'admin',
+        device_id TEXT,
+        app_version TEXT,
+        server_version TEXT
+      );
+    `);
     console.log('Database ready. Table scans exists or was created.');
   } catch (err) {
     console.error('DB init error:', err.message);
     db = null;
   }
 }
+
+// ─────────────────────────────────────────────
+// POST /clusters/save
+// ─────────────────────────────────────────────
+app.post('/clusters/save', async (req, res) => {
+  const { id, clusterId, clusterName, synopsis, dominantEntity, connectionType, frame, event, postIds, postCount, source, deviceId, appVersion } = req.body;
+  const clustId = clusterId || id;
+  if (!clustId) return res.status(400).json({ error: 'clusterId required' });
+  if (!db) return res.json({ success: true, warning: 'DB not available' });
+  try {
+    await db.query(
+      `INSERT INTO clusters (id, cluster_name, synopsis, dominant_entity, connection_type, frame, event, post_ids, post_count, source, device_id, app_version, server_version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       ON CONFLICT (id) DO UPDATE SET cluster_name=$2, synopsis=$3`,
+      [clustId, clusterName||'', synopsis||'', dominantEntity||'', connectionType||'', frame||'', event||'', postIds||[], postCount||0, source||'admin', deviceId||null, appVersion||'', SERVER_VERSION]
+    );
+    res.json({ success: true });
+  } catch(err) {
+    console.error('clusters/save error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// GET /clusters/list
+// ─────────────────────────────────────────────
+app.get('/clusters/list', async (req, res) => {
+  if (!db) return res.json({ success: true, clusters: [] });
+  try {
+    const result = await db.query(
+      `SELECT id, ts, cluster_name, synopsis, dominant_entity, connection_type, frame, event, post_ids, post_count, source, device_id, app_version, server_version
+       FROM clusters ORDER BY ts DESC LIMIT 200`
+    );
+    res.json({ success: true, clusters: result.rows.map(r => ({
+      id: r.id, ts: r.ts, clusterName: r.cluster_name, synopsis: r.synopsis,
+      dominantEntity: r.dominant_entity, connectionType: r.connection_type,
+      frame: r.frame, event: r.event, postIds: r.post_ids, postCount: r.post_count,
+      source: r.source, deviceId: r.device_id, appVersion: r.app_version, serverVersion: r.server_version
+    }))});
+  } catch(err) {
+    console.error('clusters/list error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ─────────────────────────────────────────────
 // HEALTH CHECK
