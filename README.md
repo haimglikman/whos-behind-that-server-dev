@@ -1,3 +1,8 @@
+### v1.18.0 (server-dev) | Admin: v2.12.0 | Client: v1.14.0
+- New clusters DB table — stores investigation results persistently
+- New POST /clusters/save — saves a cluster with name, synopsis, entity, connection type, post IDs
+- New GET /clusters/list — returns all clusters ordered by date desc
+
 ### v1.17.5 — bug fix (server-dev) | Admin: v2.11.1 | Client: v1.13.0
 - Fixed investigation 400 error on Hebrew/Arabic/emoji posts — replaced regex-based Unicode sanitization with Buffer-based approach that reliably strips unpaired surrogates at byte level
 
