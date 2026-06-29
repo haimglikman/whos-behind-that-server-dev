@@ -5,7 +5,10 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
-// v1.18.1 — synthesize now returns postSummaries (one-liner narrative per post);
+// v1.18.2 — clusters now store isolated_post_ids so cluster history can show
+//            omitted posts identically to the live investigation view.
+//
+// v1.18.1 — postSummaries added to synthesize.
 //            post_summaries column added to clusters table; clusters/save and
 //            clusters/list updated accordingly.
 //
@@ -104,7 +107,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '1.18.1';
+const SERVER_VERSION = '1.18.2';
 
 import express from 'express';
 import cors from 'cors';
@@ -210,6 +213,7 @@ async function initDB() {
         frame TEXT,
         event TEXT,
         post_ids TEXT[],
+        isolated_post_ids TEXT[],
         post_summaries JSONB,
         post_count INTEGER,
         source TEXT DEFAULT 'admin',
@@ -229,17 +233,18 @@ async function initDB() {
 // POST /clusters/save
 // ─────────────────────────────────────────────
 app.post('/clusters/save', async (req, res) => {
-  const { id, clusterId, clusterName, synopsis, dominantEntity, connectionType, frame, event, postIds, postSummaries, postCount, source, deviceId, appVersion } = req.body;
+  const { id, clusterId, clusterName, synopsis, dominantEntity, connectionType, frame, event, postIds, isolatedPostIds, postSummaries, postCount, source, deviceId, appVersion } = req.body;
   const clustId = clusterId || id;
   if (!clustId) return res.status(400).json({ error: 'clusterId required' });
   if (!db) return res.json({ success: true, warning: 'DB not available' });
   try {
     await db.query(`ALTER TABLE clusters ADD COLUMN IF NOT EXISTS post_summaries JSONB`);
+    await db.query(`ALTER TABLE clusters ADD COLUMN IF NOT EXISTS isolated_post_ids TEXT[]`);
     await db.query(
-      `INSERT INTO clusters (id, cluster_name, synopsis, dominant_entity, connection_type, frame, event, post_ids, post_summaries, post_count, source, device_id, app_version, server_version)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-       ON CONFLICT (id) DO UPDATE SET cluster_name=$2, synopsis=$3, post_summaries=$9`,
-      [clustId, clusterName||'', synopsis||'', dominantEntity||'', connectionType||'', frame||'', event||'', postIds||[], JSON.stringify(postSummaries||[]), postCount||0, source||'admin', deviceId||null, appVersion||'', SERVER_VERSION]
+      `INSERT INTO clusters (id, cluster_name, synopsis, dominant_entity, connection_type, frame, event, post_ids, isolated_post_ids, post_summaries, post_count, source, device_id, app_version, server_version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+       ON CONFLICT (id) DO UPDATE SET cluster_name=$2, synopsis=$3, post_summaries=$10`,
+      [clustId, clusterName||'', synopsis||'', dominantEntity||'', connectionType||'', frame||'', event||'', postIds||[], isolatedPostIds||[], JSON.stringify(postSummaries||[]), postCount||0, source||'admin', deviceId||null, appVersion||'', SERVER_VERSION]
     );
     res.json({ success: true });
   } catch(err) {
@@ -255,13 +260,14 @@ app.get('/clusters/list', async (req, res) => {
   if (!db) return res.json({ success: true, clusters: [] });
   try {
     const result = await db.query(
-      `SELECT id, ts, cluster_name, synopsis, dominant_entity, connection_type, frame, event, post_ids, post_summaries, post_count, source, device_id, app_version, server_version
+      `SELECT id, ts, cluster_name, synopsis, dominant_entity, connection_type, frame, event, post_ids, isolated_post_ids, post_summaries, post_count, source, device_id, app_version, server_version
        FROM clusters ORDER BY ts DESC LIMIT 200`
     );
     res.json({ success: true, clusters: result.rows.map(r => ({
       id: r.id, ts: r.ts, clusterName: r.cluster_name, synopsis: r.synopsis,
       dominantEntity: r.dominant_entity, connectionType: r.connection_type,
       frame: r.frame, event: r.event, postIds: r.post_ids,
+      isolatedPostIds: r.isolated_post_ids || [],
       postSummaries: r.post_summaries || [],
       postCount: r.post_count,
       source: r.source, deviceId: r.device_id, appVersion: r.app_version, serverVersion: r.server_version
