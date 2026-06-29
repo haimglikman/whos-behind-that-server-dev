@@ -5,7 +5,9 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
-// v1.18.2 — clusters now store isolated_post_ids so cluster history can show
+// v1.18.3 — PATCH /clusters/rename endpoint for user-editable cluster names.
+//
+// v1.18.2 — isolated_post_ids added to clusters.
 //            omitted posts identically to the live investigation view.
 //
 // v1.18.1 — postSummaries added to synthesize.
@@ -107,7 +109,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '1.18.2';
+const SERVER_VERSION = '1.18.3';
 
 import express from 'express';
 import cors from 'cors';
@@ -274,6 +276,22 @@ app.get('/clusters/list', async (req, res) => {
     }))});
   } catch(err) {
     console.error('clusters/list error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// PATCH /clusters/rename
+// ─────────────────────────────────────────────
+app.patch('/clusters/rename', async (req, res) => {
+  const { clusterId, clusterName } = req.body;
+  if (!clusterId) return res.status(400).json({ error: 'clusterId required' });
+  if (!db) return res.json({ success: true, warning: 'DB not available' });
+  try {
+    await db.query(`UPDATE clusters SET cluster_name=$1 WHERE id=$2`, [clusterName||'', clusterId]);
+    res.json({ success: true });
+  } catch(err) {
+    console.error('clusters/rename error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
