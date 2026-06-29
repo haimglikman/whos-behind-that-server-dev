@@ -1,3 +1,7 @@
+### v1.18.2 (server-dev) | Admin: v2.12.3 | Client: v1.14.3
+- clusters table now stores isolated_post_ids so cluster history can reconstruct omitted posts
+- clusters/save and clusters/list updated accordingly
+
 ### v1.18.1 (server-dev) | Admin: v2.12.1 | Client: v1.14.1
 - synthesize now returns postSummaries — one-liner narrative summary per post in cluster
 - post_summaries column added to clusters DB table
