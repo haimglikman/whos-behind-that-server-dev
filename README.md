@@ -1,3 +1,6 @@
+### v1.18.3 (server-dev) | Admin: v2.12.4 | Client: v1.14.4
+- New PATCH /clusters/rename — updates cluster_name for a given cluster ID
+
 ### v1.18.2 (server-dev) | Admin: v2.12.3 | Client: v1.14.3
 - clusters table now stores isolated_post_ids so cluster history can reconstruct omitted posts
 - clusters/save and clusters/list updated accordingly
