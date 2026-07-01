@@ -1,3 +1,12 @@
+### v1.19.0 (server-dev) | Admin: v2.13.0
+- clusters table: added connections JSONB column for history reconstruction
+- clusters/save: now stores connections array; postCount now includes isolated posts
+- clusters/list: returns connections field
+- New faq table: id, question, answer, faq_group, sort_order, active
+- New GET /faq/list — returns active FAQs ordered by group and sort_order
+- New POST /faq/save — add or update a FAQ item
+- New DELETE /faq/:id — soft-deletes a FAQ item (sets active=false)
+
 ### v1.18.3 (server-dev) | Admin: v2.12.4 | Client: v1.14.4
 - New PATCH /clusters/rename — updates cluster_name for a given cluster ID
 
