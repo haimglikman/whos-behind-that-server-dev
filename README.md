@@ -1,3 +1,6 @@
+### v1.19.1 (server-dev) | Admin: v2.13.1
+- Seeded 32 default FAQs on first deploy across 4 groups: Terminology, Scanning logic, Technical, Privacy
+
 ### v1.19.0 (server-dev) | Admin: v2.13.0
 - clusters table: added connections JSONB column for history reconstruction
 - clusters/save: now stores connections array; postCount now includes isolated posts
