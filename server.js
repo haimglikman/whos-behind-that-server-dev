@@ -5,7 +5,11 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
-// v1.18.3 — PATCH /clusters/rename endpoint for user-editable cluster names.
+// v1.19.0 — connections column added to clusters (for history reconstruction);
+//            postCount now includes isolated posts; FAQ table + GET /faq/list,
+//            POST /faq/save, DELETE /faq/:id endpoints.
+//
+// v1.18.3 — PATCH /clusters/rename.
 //
 // v1.18.2 — isolated_post_ids added to clusters.
 //            omitted posts identically to the live investigation view.
@@ -109,7 +113,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '1.18.3';
+const SERVER_VERSION = '1.19.0';
 
 import express from 'express';
 import cors from 'cors';
@@ -217,11 +221,21 @@ async function initDB() {
         post_ids TEXT[],
         isolated_post_ids TEXT[],
         post_summaries JSONB,
+        connections JSONB,
         post_count INTEGER,
         source TEXT DEFAULT 'admin',
         device_id TEXT,
         app_version TEXT,
         server_version TEXT
+      );
+      CREATE TABLE IF NOT EXISTS faq (
+        id SERIAL PRIMARY KEY,
+        ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        question TEXT NOT NULL,
+        answer TEXT NOT NULL,
+        faq_group TEXT DEFAULT 'General',
+        sort_order INTEGER DEFAULT 0,
+        active BOOLEAN DEFAULT TRUE
       );
     `);
     console.log('Database ready. Table scans exists or was created.');
@@ -235,18 +249,21 @@ async function initDB() {
 // POST /clusters/save
 // ─────────────────────────────────────────────
 app.post('/clusters/save', async (req, res) => {
-  const { id, clusterId, clusterName, synopsis, dominantEntity, connectionType, frame, event, postIds, isolatedPostIds, postSummaries, postCount, source, deviceId, appVersion } = req.body;
+  const { id, clusterId, clusterName, synopsis, dominantEntity, connectionType, frame, event, postIds, isolatedPostIds, postSummaries, connections, postCount, source, deviceId, appVersion } = req.body;
   const clustId = clusterId || id;
   if (!clustId) return res.status(400).json({ error: 'clusterId required' });
   if (!db) return res.json({ success: true, warning: 'DB not available' });
   try {
     await db.query(`ALTER TABLE clusters ADD COLUMN IF NOT EXISTS post_summaries JSONB`);
     await db.query(`ALTER TABLE clusters ADD COLUMN IF NOT EXISTS isolated_post_ids TEXT[]`);
+    await db.query(`ALTER TABLE clusters ADD COLUMN IF NOT EXISTS connections JSONB`);
+    // postCount = all posts (connected + isolated)
+    const totalCount = (postIds||[]).length + (isolatedPostIds||[]).length;
     await db.query(
-      `INSERT INTO clusters (id, cluster_name, synopsis, dominant_entity, connection_type, frame, event, post_ids, isolated_post_ids, post_summaries, post_count, source, device_id, app_version, server_version)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-       ON CONFLICT (id) DO UPDATE SET cluster_name=$2, synopsis=$3, post_summaries=$10`,
-      [clustId, clusterName||'', synopsis||'', dominantEntity||'', connectionType||'', frame||'', event||'', postIds||[], isolatedPostIds||[], JSON.stringify(postSummaries||[]), postCount||0, source||'admin', deviceId||null, appVersion||'', SERVER_VERSION]
+      `INSERT INTO clusters (id, cluster_name, synopsis, dominant_entity, connection_type, frame, event, post_ids, isolated_post_ids, post_summaries, connections, post_count, source, device_id, app_version, server_version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+       ON CONFLICT (id) DO UPDATE SET cluster_name=$2, synopsis=$3, post_summaries=$10, connections=$11`,
+      [clustId, clusterName||'', synopsis||'', dominantEntity||'', connectionType||'', frame||'', event||'', postIds||[], isolatedPostIds||[], JSON.stringify(postSummaries||[]), JSON.stringify(connections||[]), totalCount, source||'admin', deviceId||null, appVersion||'', SERVER_VERSION]
     );
     res.json({ success: true });
   } catch(err) {
@@ -262,7 +279,7 @@ app.get('/clusters/list', async (req, res) => {
   if (!db) return res.json({ success: true, clusters: [] });
   try {
     const result = await db.query(
-      `SELECT id, ts, cluster_name, synopsis, dominant_entity, connection_type, frame, event, post_ids, isolated_post_ids, post_summaries, post_count, source, device_id, app_version, server_version
+      `SELECT id, ts, cluster_name, synopsis, dominant_entity, connection_type, frame, event, post_ids, isolated_post_ids, post_summaries, connections, post_count, source, device_id, app_version, server_version
        FROM clusters ORDER BY ts DESC LIMIT 200`
     );
     res.json({ success: true, clusters: result.rows.map(r => ({
@@ -271,6 +288,7 @@ app.get('/clusters/list', async (req, res) => {
       frame: r.frame, event: r.event, postIds: r.post_ids,
       isolatedPostIds: r.isolated_post_ids || [],
       postSummaries: r.post_summaries || [],
+      connections: r.connections || [],
       postCount: r.post_count,
       source: r.source, deviceId: r.device_id, appVersion: r.app_version, serverVersion: r.server_version
     }))});
@@ -292,6 +310,67 @@ app.patch('/clusters/rename', async (req, res) => {
     res.json({ success: true });
   } catch(err) {
     console.error('clusters/rename error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// GET /faq/list
+// ─────────────────────────────────────────────
+app.get('/faq/list', async (req, res) => {
+  if (!db) return res.json({ success: true, faqs: [] });
+  try {
+    const result = await db.query(
+      `SELECT id, question, answer, faq_group, sort_order, active FROM faq WHERE active=TRUE ORDER BY faq_group, sort_order, id`
+    );
+    res.json({ success: true, faqs: result.rows.map(r => ({
+      id: r.id, question: r.question, answer: r.answer,
+      group: r.faq_group, sortOrder: r.sort_order, active: r.active
+    }))});
+  } catch(err) {
+    console.error('faq/list error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// POST /faq/save  (add or update)
+// ─────────────────────────────────────────────
+app.post('/faq/save', async (req, res) => {
+  const { id, question, answer, group, sortOrder } = req.body;
+  if (!question || !answer) return res.status(400).json({ error: 'question and answer required' });
+  if (!db) return res.json({ success: true, warning: 'DB not available' });
+  try {
+    let result;
+    if (id) {
+      result = await db.query(
+        `UPDATE faq SET question=$1, answer=$2, faq_group=$3, sort_order=$4 WHERE id=$5 RETURNING id`,
+        [question, answer, group||'General', sortOrder||0, id]
+      );
+    } else {
+      result = await db.query(
+        `INSERT INTO faq (question, answer, faq_group, sort_order) VALUES ($1,$2,$3,$4) RETURNING id`,
+        [question, answer, group||'General', sortOrder||0]
+      );
+    }
+    res.json({ success: true, id: result.rows[0]?.id });
+  } catch(err) {
+    console.error('faq/save error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// DELETE /faq/:id
+// ─────────────────────────────────────────────
+app.delete('/faq/:id', async (req, res) => {
+  const { id } = req.params;
+  if (!db) return res.json({ success: true, warning: 'DB not available' });
+  try {
+    await db.query(`UPDATE faq SET active=FALSE WHERE id=$1`, [id]);
+    res.json({ success: true });
+  } catch(err) {
+    console.error('faq/delete error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
