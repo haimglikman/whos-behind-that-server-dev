@@ -1,3 +1,6 @@
+### v1.19.2 (server-dev) | Client: v1.15.2
+- clusters/list: accepts optional device_id query param — client passes its own ID to see only its clusters; admin omits it to see all
+
 ### v1.19.1 (server-dev) | Admin: v2.13.1
 - Seeded 32 default FAQs on first deploy across 4 groups: Terminology, Scanning logic, Technical, Privacy
 
