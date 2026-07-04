@@ -5,7 +5,11 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
-// v1.19.1 — Seed 32 default FAQs into DB on first deploy (all 4 groups:
+// v1.19.2 — clusters/list now accepts optional device_id query param — client
+//            passes its own device_id to see only its clusters; admin omits it
+//            to see all.
+//
+// v1.19.1 — seeded 32 default FAQs.
 //            Terminology, Scanning logic, Technical, Privacy).
 //
 // v1.19.0 — connections column, FAQ endpoints.
@@ -116,7 +120,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '1.19.1';
+const SERVER_VERSION = '1.19.2';
 
 import express from 'express';
 import cors from 'cors';
@@ -329,11 +333,19 @@ app.post('/clusters/save', async (req, res) => {
 // ─────────────────────────────────────────────
 app.get('/clusters/list', async (req, res) => {
   if (!db) return res.json({ success: true, clusters: [] });
+  const { device_id } = req.query;
   try {
-    const result = await db.query(
-      `SELECT id, ts, cluster_name, synopsis, dominant_entity, connection_type, frame, event, post_ids, isolated_post_ids, post_summaries, connections, post_count, source, device_id, app_version, server_version
-       FROM clusters ORDER BY ts DESC LIMIT 200`
-    );
+    let query, params;
+    if (device_id) {
+      query = `SELECT id, ts, cluster_name, synopsis, dominant_entity, connection_type, frame, event, post_ids, isolated_post_ids, post_summaries, connections, post_count, source, device_id, app_version, server_version
+               FROM clusters WHERE device_id=$1 ORDER BY ts DESC LIMIT 200`;
+      params = [device_id];
+    } else {
+      query = `SELECT id, ts, cluster_name, synopsis, dominant_entity, connection_type, frame, event, post_ids, isolated_post_ids, post_summaries, connections, post_count, source, device_id, app_version, server_version
+               FROM clusters ORDER BY ts DESC LIMIT 200`;
+      params = [];
+    }
+    const result = await db.query(query, params);
     res.json({ success: true, clusters: result.rows.map(r => ({
       id: r.id, ts: r.ts, clusterName: r.cluster_name, synopsis: r.synopsis,
       dominantEntity: r.dominant_entity, connectionType: r.connection_type,
