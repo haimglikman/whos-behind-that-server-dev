@@ -5,7 +5,11 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
-// v1.19.2 — clusters/list now accepts optional device_id query param — client
+// v1.19.3 — clusters now store full posts array (scanId, url, topMatches,
+//            overallScore, ts) so admin can reconstruct client clusters without
+//            needing client's localStorage.
+//
+// v1.19.2 — clusters/list device_id filter.
 //            passes its own device_id to see only its clusters; admin omits it
 //            to see all.
 //
@@ -120,7 +124,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '1.19.2';
+const SERVER_VERSION = '1.19.3';
 
 import express from 'express';
 import cors from 'cors';
@@ -229,6 +233,7 @@ async function initDB() {
         isolated_post_ids TEXT[],
         post_summaries JSONB,
         connections JSONB,
+        posts JSONB,
         post_count INTEGER,
         source TEXT DEFAULT 'admin',
         device_id TEXT,
@@ -305,7 +310,7 @@ async function initDB() {
 // POST /clusters/save
 // ─────────────────────────────────────────────
 app.post('/clusters/save', async (req, res) => {
-  const { id, clusterId, clusterName, synopsis, dominantEntity, connectionType, frame, event, postIds, isolatedPostIds, postSummaries, connections, postCount, source, deviceId, appVersion } = req.body;
+  const { id, clusterId, clusterName, synopsis, dominantEntity, connectionType, frame, event, postIds, isolatedPostIds, postSummaries, connections, posts, postCount, source, deviceId, appVersion } = req.body;
   const clustId = clusterId || id;
   if (!clustId) return res.status(400).json({ error: 'clusterId required' });
   if (!db) return res.json({ success: true, warning: 'DB not available' });
@@ -313,13 +318,13 @@ app.post('/clusters/save', async (req, res) => {
     await db.query(`ALTER TABLE clusters ADD COLUMN IF NOT EXISTS post_summaries JSONB`);
     await db.query(`ALTER TABLE clusters ADD COLUMN IF NOT EXISTS isolated_post_ids TEXT[]`);
     await db.query(`ALTER TABLE clusters ADD COLUMN IF NOT EXISTS connections JSONB`);
-    // postCount = all posts (connected + isolated)
+    await db.query(`ALTER TABLE clusters ADD COLUMN IF NOT EXISTS posts JSONB`);
     const totalCount = (postIds||[]).length + (isolatedPostIds||[]).length;
     await db.query(
-      `INSERT INTO clusters (id, cluster_name, synopsis, dominant_entity, connection_type, frame, event, post_ids, isolated_post_ids, post_summaries, connections, post_count, source, device_id, app_version, server_version)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-       ON CONFLICT (id) DO UPDATE SET cluster_name=$2, synopsis=$3, post_summaries=$10, connections=$11`,
-      [clustId, clusterName||'', synopsis||'', dominantEntity||'', connectionType||'', frame||'', event||'', postIds||[], isolatedPostIds||[], JSON.stringify(postSummaries||[]), JSON.stringify(connections||[]), totalCount, source||'admin', deviceId||null, appVersion||'', SERVER_VERSION]
+      `INSERT INTO clusters (id, cluster_name, synopsis, dominant_entity, connection_type, frame, event, post_ids, isolated_post_ids, post_summaries, connections, posts, post_count, source, device_id, app_version, server_version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+       ON CONFLICT (id) DO UPDATE SET cluster_name=$2, synopsis=$3, post_summaries=$10, connections=$11, posts=$12`,
+      [clustId, clusterName||'', synopsis||'', dominantEntity||'', connectionType||'', frame||'', event||'', postIds||[], isolatedPostIds||[], JSON.stringify(postSummaries||[]), JSON.stringify(connections||[]), JSON.stringify(posts||[]), totalCount, source||'admin', deviceId||null, appVersion||'', SERVER_VERSION]
     );
     res.json({ success: true });
   } catch(err) {
@@ -353,6 +358,7 @@ app.get('/clusters/list', async (req, res) => {
       isolatedPostIds: r.isolated_post_ids || [],
       postSummaries: r.post_summaries || [],
       connections: r.connections || [],
+      posts: r.posts || [],
       postCount: r.post_count,
       source: r.source, deviceId: r.device_id, appVersion: r.app_version, serverVersion: r.server_version
     }))});
