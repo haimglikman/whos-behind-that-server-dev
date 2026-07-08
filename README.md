@@ -1,3 +1,6 @@
+### v1.19.3 (server-dev) | Admin: v2.13.10 | Client: v1.15.5
+- clusters now store a posts JSONB array (scanId, url, topMatches, overallScore, ts) so any device can reconstruct the cluster visualization without needing the original device's localStorage
+
 ### v1.19.2 (server-dev) | Client: v1.15.2
 - clusters/list: accepts optional device_id query param — client passes its own ID to see only its clusters; admin omits it to see all
 
