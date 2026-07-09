@@ -5,7 +5,10 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
-// v1.19.3 — clusters now store full posts array (scanId, url, topMatches,
+// v1.19.4 — bug fix: posts column missing from clusters/list SELECT query —
+//            posts were being saved correctly but never returned.
+//
+// v1.19.3 — clusters store full posts array.
 //            overallScore, ts) so admin can reconstruct client clusters without
 //            needing client's localStorage.
 //
@@ -124,7 +127,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '1.19.3';
+const SERVER_VERSION = '1.19.4';
 
 import express from 'express';
 import cors from 'cors';
@@ -342,11 +345,11 @@ app.get('/clusters/list', async (req, res) => {
   try {
     let query, params;
     if (device_id) {
-      query = `SELECT id, ts, cluster_name, synopsis, dominant_entity, connection_type, frame, event, post_ids, isolated_post_ids, post_summaries, connections, post_count, source, device_id, app_version, server_version
+      query = `SELECT id, ts, cluster_name, synopsis, dominant_entity, connection_type, frame, event, post_ids, isolated_post_ids, post_summaries, connections, posts, post_count, source, device_id, app_version, server_version
                FROM clusters WHERE device_id=$1 ORDER BY ts DESC LIMIT 200`;
       params = [device_id];
     } else {
-      query = `SELECT id, ts, cluster_name, synopsis, dominant_entity, connection_type, frame, event, post_ids, isolated_post_ids, post_summaries, connections, post_count, source, device_id, app_version, server_version
+      query = `SELECT id, ts, cluster_name, synopsis, dominant_entity, connection_type, frame, event, post_ids, isolated_post_ids, post_summaries, connections, posts, post_count, source, device_id, app_version, server_version
                FROM clusters ORDER BY ts DESC LIMIT 200`;
       params = [];
     }
