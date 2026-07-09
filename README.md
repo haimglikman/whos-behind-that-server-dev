@@ -1,3 +1,6 @@
+### v1.19.4 — bug fix (server-dev) | Admin: v2.13.14 | Client: v1.15.9
+- Fixed posts column missing from clusters/list SELECT query — posts were being saved correctly to DB but never returned to the client, causing posts: [] on every cluster fetch
+
 ### v1.19.3 (server-dev) | Admin: v2.13.10 | Client: v1.15.5
 - clusters now store a posts JSONB array (scanId, url, topMatches, overallScore, ts) so any device can reconstruct the cluster visualization without needing the original device's localStorage
 
