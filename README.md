@@ -1,3 +1,6 @@
+### v1.20.3 — bug fix (server-dev) | Client: v1.15.11 | Admin: v2.13.15
+- Rewrote YouTube transcript fetcher: now uses timedtext fmt=srv3 (XML format) across multiple languages, with fallback to captions API list. Previous json3 format caused "Unexpected end of JSON input" on many videos.
+
 ### v1.20.2 (server-dev) | Client: v1.15.11 | Admin: v2.13.15
 - YouTube: videos longer than 10 minutes are rejected with a clear user-facing message
 - YouTube: live/streaming videos are rejected with a clear user-facing message
