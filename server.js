@@ -5,7 +5,15 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
-// v1.19.4 — bug fix: posts column missing from clusters/list SELECT query —
+// v1.20.0 — YouTube transcript support:
+//            - Direct YouTube URLs: fetches transcript via youtube-transcript,
+//              falls back to manual text entry if no transcript available.
+//            - News articles with embedded YouTube videos: transcripts fetched
+//              and appended to article text automatically. If no transcript
+//              available, analysis proceeds on article text only with a note.
+//            - YouTube added as a platform in detectPlatform().
+//
+// v1.19.4 — bug fix: posts column missing from clusters/list SELECT query.
 //            posts were being saved correctly but never returned.
 //
 // v1.19.3 — clusters store full posts array.
@@ -127,13 +135,14 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '1.19.4';
+const SERVER_VERSION = '1.20.0';
 
 import express from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
 import * as cheerio from 'cheerio';
 import pg from 'pg';
+import { YoutubeTranscript } from 'youtube-transcript';
 
 const { Pool } = pg;
 const app = express();
@@ -463,11 +472,12 @@ app.post('/fetch-post', async (req, res) => {
   if (!url) return res.status(400).json({ error: 'url is required' });
   try {
     const platform = detectPlatform(url);
-    if (!platform) return res.status(400).json({ error: 'Unsupported URL. Paste a URL from X, Facebook, Instagram, or a supported news website.' });
+    if (!platform) return res.status(400).json({ error: 'Unsupported URL. Paste a URL from X, Facebook, Instagram, YouTube, or a supported news website.' });
     let result;
     if (platform === 'x') result = await fetchFromX(url);
     else if (platform === 'facebook') result = await fetchFromFacebook(url);
     else if (platform === 'instagram') result = await fetchFromInstagram(url);
+    else if (platform === 'youtube') result = await fetchFromYoutube(url);
     else if (platform === 'news') result = await fetchFromNews(url);
     res.json({ success: true, platform, ...result });
   } catch (err) {
@@ -503,14 +513,15 @@ app.post('/fetch-and-analyze', async (req, res) => {
   if (!ANTHROPIC_KEY) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured on server' });
   try {
     const platform = detectPlatform(url);
-    if (!platform) return res.status(400).json({ error: 'Unsupported URL. Paste a URL from X, Facebook, Instagram, or a supported news website.' });
+    if (!platform) return res.status(400).json({ error: 'Unsupported URL. Paste a URL from X, Facebook, Instagram, YouTube, or a supported news website.' });
     let postData;
     if (platform === 'x') postData = await fetchFromX(url);
     else if (platform === 'facebook') postData = await fetchFromFacebook(url);
     else if (platform === 'instagram') postData = await fetchFromInstagram(url);
+    else if (platform === 'youtube') postData = await fetchFromYoutube(url);
     else if (platform === 'news') postData = await fetchFromNews(url);
     if (!postData.text) return res.status(422).json({ error: 'Could not extract text. The content may be private, paywalled, or the platform may be blocking access.' });
-    const minLen = platform === 'news' ? 50 : 100;
+    const minLen = (platform === 'news' || platform === 'youtube') ? 50 : 100;
     if (postData.text.length < minLen) return res.status(422).json({ error: `Fetched text is too short (${postData.text.length} chars). Please paste the article text manually.` });
     const analysis = await scoreWithClaude(postData.text, entities);
     const responseUrl = postData.normalizedUrl || url;
@@ -1076,8 +1087,52 @@ function detectPlatform(url) {
   if (/x\.com|twitter\.com/i.test(url)) return 'x';
   if (/facebook\.com|fb\.com/i.test(url)) return 'facebook';
   if (/instagram\.com/i.test(url)) return 'instagram';
+  if (/youtube\.com|youtu\.be/i.test(url)) return 'youtube';
   if (isNewsDomain(url)) return 'news';
   return null;
+}
+
+// ─────────────────────────────────────────────
+// YOUTUBE HELPERS
+// ─────────────────────────────────────────────
+function extractYoutubeId(url) {
+  const patterns = [
+    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/)([a-zA-Z0-9_-]{11})/,
+    /youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/
+  ];
+  for (const p of patterns) {
+    const m = url.match(p);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+function extractEmbeddedYoutubeIds(html) {
+  const ids = new Set();
+  const patterns = [
+    /(?:youtube\.com\/embed\/|youtu\.be\/|youtube\.com\/watch\?v=)([a-zA-Z0-9_-]{11})/g,
+    /data-video-id="([a-zA-Z0-9_-]{11})"/g,
+    /"videoId":"([a-zA-Z0-9_-]{11})"/g
+  ];
+  for (const p of patterns) {
+    let m;
+    while ((m = p.exec(html)) !== null) ids.add(m[1]);
+  }
+  return [...ids];
+}
+
+async function fetchYoutubeTranscript(videoId) {
+  try {
+    const transcript = await YoutubeTranscript.fetchTranscript(videoId);
+    if (!transcript || transcript.length === 0) return null;
+    // Combine all segments into one text, limit to ~3000 words
+    const text = transcript.map(function(t){ return t.text; }).join(' ').replace(/\s+/g, ' ').trim();
+    const words = text.split(' ');
+    return words.length > 3000 ? words.slice(0, 3000).join(' ') + '...' : text;
+  } catch(e) {
+    console.log('YouTube transcript not available for', videoId, ':', e.message);
+    return null;
+  }
 }
 
 async function fetchFromNews(url) {
@@ -1117,11 +1172,49 @@ async function fetchFromNews(url) {
                      $('[itemprop="author"]').first().text() || null;
       if (!text || text.length < 50) { lastError = new Error('Could not extract article text'); continue; }
       const fullText = title ? `${title}\n\n${text}` : text;
+
+      // Look for embedded YouTube videos and fetch their transcripts
+      const embeddedIds = extractEmbeddedYoutubeIds(html);
+      let videoNote = '';
+      if (embeddedIds.length > 0) {
+        const transcripts = [];
+        for (const vid of embeddedIds.slice(0, 5)) { // max 5 videos
+          const t = await fetchYoutubeTranscript(vid);
+          if (t) transcripts.push(t);
+        }
+        if (transcripts.length > 0) {
+          const combined = transcripts.join('\n\n');
+          const words = combined.split(' ');
+          const trimmed = words.length > 3000 ? words.slice(0, 3000).join(' ') + '...' : combined;
+          console.log(`News fetch: appended ${transcripts.length} YouTube transcript(s) from ${domain}`);
+          return { text: fullText + '\n\n' + trimmed, author: author ? author.trim() : null, authorHandle: author ? author.trim() : null, source: 'news', domain, hasVideoTranscript: true };
+        } else {
+          // Videos found but no transcripts available
+          videoNote = 'Note: this article contains embedded video(s) whose transcript could not be retrieved. Analysis is based on article text only.';
+        }
+      }
+
       console.log(`News fetch success from ${domain}, text length: ${fullText.length}`);
-      return { text: fullText, author: author ? author.trim() : null, authorHandle: author ? author.trim() : null, source: 'news', domain };
+      return { text: fullText, author: author ? author.trim() : null, authorHandle: author ? author.trim() : null, source: 'news', domain, videoNote: videoNote || null };
     } catch(e) { lastError = e; }
   }
   throw new Error(`Could not fetch article from ${domain}. ${lastError?.message || ''}. The article may be paywalled or require login.`);
+}
+
+async function fetchFromYoutube(url) {
+  const videoId = extractYoutubeId(url);
+  if (!videoId) throw new Error('Could not extract YouTube video ID from URL.');
+  const transcript = await fetchYoutubeTranscript(videoId);
+  if (!transcript) throw new Error('No transcript available for this YouTube video. You can paste the video text manually instead.');
+  // Try to get title via oEmbed
+  let title = '';
+  try {
+    const oe = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`);
+    if (oe.ok) { const d = await oe.json(); title = d.title || ''; }
+  } catch(e) {}
+  const fullText = title ? `${title}\n\n${transcript}` : transcript;
+  console.log(`YouTube transcript fetched for ${videoId}, length: ${fullText.length}`);
+  return { text: fullText, author: null, authorHandle: null, source: 'youtube', domain: 'youtube.com' };
 }
 
 // ─────────────────────────────────────────────
