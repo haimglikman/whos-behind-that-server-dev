@@ -5,7 +5,12 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
-// v1.20.2 — YouTube scanning limits:
+// v1.20.3 — Rewrote fetchYoutubeTranscript: tries timedtext fmt=srv3 (XML)
+//            across multiple languages first, then falls back to captions API
+//            list + srv3. Previous json3 format caused "Unexpected end of JSON"
+//            errors on many videos.
+//
+// v1.20.2 — YouTube scanning limits.
 //            - Videos longer than 10 minutes are rejected with a clear message.
 //            - Live/streaming videos are rejected with a clear message.
 //            Both checks use the YouTube Data API v3 video metadata endpoint.
@@ -144,7 +149,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '1.20.2';
+const SERVER_VERSION = '1.20.3';
 
 import express from 'express';
 import cors from 'cors';
@@ -1134,36 +1139,64 @@ function extractEmbeddedYoutubeIds(html) {
 async function fetchYoutubeTranscript(videoId) {
   if (!YOUTUBE_API_KEY) { console.log('No YOUTUBE_API_KEY set'); return null; }
   try {
-    // Step 1: get caption tracks list
+    // Method 1: Try timedtext with fmt=srv3 (XML-based, more reliable)
+    const langs = ['en', 'en-US', 'en-GB', 'iw', 'he', 'ar'];
+    for (const lang of langs) {
+      try {
+        const url = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}&fmt=srv3`;
+        const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' } });
+        if (!res.ok) continue;
+        const xml = await res.text();
+        if (!xml || xml.length < 50) continue;
+        // Parse XML text elements
+        const matches = xml.match(/<text[^>]*>([^<]*)<\/text>/g) || [];
+        if (matches.length === 0) continue;
+        const text = matches
+          .map(function(m){ return m.replace(/<[^>]+>/g, '').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&#39;/g,"'").replace(/&quot;/g,'"').trim(); })
+          .filter(Boolean)
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (text.length < 50) continue;
+        const words = text.split(' ');
+        const result = words.length > 3000 ? words.slice(0, 3000).join(' ') + '...' : text;
+        console.log(`YouTube transcript fetched via timedtext (${lang}) for ${videoId}, ${words.length} words`);
+        return result;
+      } catch(e) { continue; }
+    }
+
+    // Method 2: Try auto-generated captions via list API then timedtext
     const captionsUrl = `https://www.googleapis.com/youtube/v3/captions?part=snippet&videoId=${videoId}&key=${YOUTUBE_API_KEY}`;
     const captionsRes = await fetch(captionsUrl);
-    if (!captionsRes.ok) { console.log('YouTube captions list failed:', captionsRes.status); return null; }
-    const captionsData = await captionsRes.json();
-    const items = captionsData.items || [];
-    if (items.length === 0) { console.log('No captions for', videoId); return null; }
+    if (captionsRes.ok) {
+      const captionsData = await captionsRes.json();
+      const items = captionsData.items || [];
+      for (const item of items) {
+        const lang = item.snippet.language || 'en';
+        try {
+          const url = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}&fmt=srv3`;
+          const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' } });
+          if (!res.ok) continue;
+          const xml = await res.text();
+          const matches = xml.match(/<text[^>]*>([^<]*)<\/text>/g) || [];
+          if (matches.length === 0) continue;
+          const text = matches
+            .map(function(m){ return m.replace(/<[^>]+>/g, '').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&#39;/g,"'").replace(/&quot;/g,'"').trim(); })
+            .filter(Boolean)
+            .join(' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+          if (text.length < 50) continue;
+          const words = text.split(' ');
+          const result = words.length > 3000 ? words.slice(0, 3000).join(' ') + '...' : text;
+          console.log(`YouTube transcript fetched via API captions (${lang}) for ${videoId}, ${words.length} words`);
+          return result;
+        } catch(e) { continue; }
+      }
+    }
 
-    // Prefer English, then any language
-    const track = items.find(function(i){ return i.snippet.language === 'en' || i.snippet.language === 'en-US'; })
-                || items.find(function(i){ return i.snippet.trackKind === 'asr'; }) // auto-generated
-                || items[0];
-
-    // Step 2: fetch the actual transcript using timedtext endpoint (no auth needed)
-    const timedTextUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${track.snippet.language}&fmt=json3`;
-    const ttRes = await fetch(timedTextUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-    if (!ttRes.ok) { console.log('timedtext fetch failed:', ttRes.status); return null; }
-    const ttData = await ttRes.json();
-    const events = ttData.events || [];
-    const text = events
-      .filter(function(e){ return e.segs; })
-      .map(function(e){ return e.segs.map(function(s){ return s.utf8||''; }).join(''); })
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (!text || text.length < 50) { console.log('Transcript too short for', videoId); return null; }
-    const words = text.split(' ');
-    const result = words.length > 3000 ? words.slice(0, 3000).join(' ') + '...' : text;
-    console.log(`YouTube transcript fetched for ${videoId}, ${words.length} words`);
-    return result;
+    console.log('No transcript found for', videoId, '- all methods exhausted');
+    return null;
   } catch(e) {
     console.log('YouTube transcript error for', videoId, ':', e.message);
     return null;
