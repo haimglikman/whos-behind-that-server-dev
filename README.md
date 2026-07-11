@@ -1,3 +1,13 @@
+### v1.20.2 (server-dev) | Client: v1.15.11 | Admin: v2.13.15
+- YouTube: videos longer than 10 minutes are rejected with a clear user-facing message
+- YouTube: live/streaming videos are rejected with a clear user-facing message
+- Both checks use YouTube Data API v3 video metadata before attempting transcript fetch
+
+### v1.20.1 — bug fix (server-dev) | Client: v1.15.11 | Admin: v2.13.15
+- Switched YouTube transcript fetching from youtube-transcript package (blocked by YouTube CAPTCHA on cloud IPs) to YouTube Data API v3 + timedtext endpoint
+- Requires YOUTUBE_API_KEY environment variable on Render
+- Removed youtube-transcript from package.json
+
 ### v1.20.0 (server-dev) | Client: v1.15.11 | Admin: v2.13.15
 - YouTube transcript support: direct YouTube URLs now fetch the video transcript via youtube-transcript package and analyze it. Falls back to manual text entry if no transcript available.
 - News articles with embedded YouTube videos: transcripts fetched and appended to article text automatically. If no transcript available, analysis proceeds on article text only with a note shown to the user.
