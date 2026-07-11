@@ -5,7 +5,11 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
-// v1.20.3 — Rewrote fetchYoutubeTranscript: tries timedtext fmt=srv3 (XML)
+// v1.20.4 — Switched to YouTube innertube API for transcript fetching —
+//            same internal API YouTube's own frontend uses, works for ASR
+//            (auto-generated) captions without OAuth authentication.
+//
+// v1.20.3 — Rewrote fetchYoutubeTranscript.
 //            across multiple languages first, then falls back to captions API
 //            list + srv3. Previous json3 format caused "Unexpected end of JSON"
 //            errors on many videos.
@@ -149,7 +153,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '1.20.3';
+const SERVER_VERSION = '1.20.4';
 
 import express from 'express';
 import cors from 'cors';
@@ -1137,66 +1141,58 @@ function extractEmbeddedYoutubeIds(html) {
 }
 
 async function fetchYoutubeTranscript(videoId) {
-  if (!YOUTUBE_API_KEY) { console.log('No YOUTUBE_API_KEY set'); return null; }
   try {
-    // Method 1: Try timedtext with fmt=srv3 (XML-based, more reliable)
-    const langs = ['en', 'en-US', 'en-GB', 'iw', 'he', 'ar'];
-    for (const lang of langs) {
-      try {
-        const url = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}&fmt=srv3`;
-        const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' } });
-        if (!res.ok) continue;
-        const xml = await res.text();
-        if (!xml || xml.length < 50) continue;
-        // Parse XML text elements
-        const matches = xml.match(/<text[^>]*>([^<]*)<\/text>/g) || [];
-        if (matches.length === 0) continue;
-        const text = matches
-          .map(function(m){ return m.replace(/<[^>]+>/g, '').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&#39;/g,"'").replace(/&quot;/g,'"').trim(); })
-          .filter(Boolean)
-          .join(' ')
-          .replace(/\s+/g, ' ')
-          .trim();
-        if (text.length < 50) continue;
-        const words = text.split(' ');
-        const result = words.length > 3000 ? words.slice(0, 3000).join(' ') + '...' : text;
-        console.log(`YouTube transcript fetched via timedtext (${lang}) for ${videoId}, ${words.length} words`);
-        return result;
-      } catch(e) { continue; }
-    }
+    // Use YouTube's internal innertube API — same as what the YouTube frontend uses
+    const body = {
+      context: {
+        client: { clientName: 'WEB', clientVersion: '2.20240101' }
+      },
+      videoId: videoId,
+      params: 'CgIIAQ%3D%3D' // requests auto-generated captions
+    };
 
-    // Method 2: Try auto-generated captions via list API then timedtext
-    const captionsUrl = `https://www.googleapis.com/youtube/v3/captions?part=snippet&videoId=${videoId}&key=${YOUTUBE_API_KEY}`;
-    const captionsRes = await fetch(captionsUrl);
-    if (captionsRes.ok) {
-      const captionsData = await captionsRes.json();
-      const items = captionsData.items || [];
-      for (const item of items) {
-        const lang = item.snippet.language || 'en';
-        try {
-          const url = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}&fmt=srv3`;
-          const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' } });
-          if (!res.ok) continue;
-          const xml = await res.text();
-          const matches = xml.match(/<text[^>]*>([^<]*)<\/text>/g) || [];
-          if (matches.length === 0) continue;
-          const text = matches
-            .map(function(m){ return m.replace(/<[^>]+>/g, '').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&#39;/g,"'").replace(/&quot;/g,'"').trim(); })
-            .filter(Boolean)
-            .join(' ')
-            .replace(/\s+/g, ' ')
-            .trim();
-          if (text.length < 50) continue;
-          const words = text.split(' ');
-          const result = words.length > 3000 ? words.slice(0, 3000).join(' ') + '...' : text;
-          console.log(`YouTube transcript fetched via API captions (${lang}) for ${videoId}, ${words.length} words`);
-          return result;
-        } catch(e) { continue; }
+    const res = await fetch('https://www.youtube.com/youtubei/v1/get_transcript', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'X-YouTube-Client-Name': '1',
+        'X-YouTube-Client-Version': '2.20240101'
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (!res.ok) { console.log('innertube transcript failed:', res.status); return null; }
+    const data = await res.json();
+
+    // Extract text from transcript segments
+    const actions = data?.actions || [];
+    const segments = [];
+    function extractText(obj) {
+      if (!obj) return;
+      if (typeof obj === 'string') return;
+      if (obj.transcriptSegmentRenderer) {
+        const snippet = obj.transcriptSegmentRenderer.snippet;
+        if (snippet && snippet.runs) {
+          segments.push(snippet.runs.map(function(r){ return r.text||''; }).join(''));
+        }
+      }
+      if (typeof obj === 'object') {
+        Object.values(obj).forEach(function(v){ if (typeof v === 'object') extractText(v); });
       }
     }
+    actions.forEach(extractText);
 
-    console.log('No transcript found for', videoId, '- all methods exhausted');
-    return null;
+    if (segments.length === 0) {
+      console.log('innertube: no segments found for', videoId);
+      return null;
+    }
+
+    const text = segments.join(' ').replace(/\s+/g, ' ').trim();
+    const words = text.split(' ');
+    const result = words.length > 3000 ? words.slice(0, 3000).join(' ') + '...' : text;
+    console.log(`YouTube transcript fetched via innertube for ${videoId}, ${words.length} words`);
+    return result;
   } catch(e) {
     console.log('YouTube transcript error for', videoId, ':', e.message);
     return null;
