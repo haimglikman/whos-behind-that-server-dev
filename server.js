@@ -5,8 +5,17 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
-// v1.20.0 — YouTube transcript support:
-//            - Direct YouTube URLs: fetches transcript via youtube-transcript,
+// v1.20.2 — YouTube scanning limits:
+//            - Videos longer than 10 minutes are rejected with a clear message.
+//            - Live/streaming videos are rejected with a clear message.
+//            Both checks use the YouTube Data API v3 video metadata endpoint.
+//
+// v1.20.1 — Switched to YouTube Data API v3.
+//            package (blocked by YouTube CAPTCHA on cloud IPs) to YouTube Data
+//            API v3 + timedtext endpoint. Requires YOUTUBE_API_KEY env var.
+//            Removed youtube-transcript dependency from package.json.
+//
+// v1.20.0 — YouTube transcript support.
 //              falls back to manual text entry if no transcript available.
 //            - News articles with embedded YouTube videos: transcripts fetched
 //              and appended to article text automatically. If no transcript
@@ -135,14 +144,15 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '1.20.0';
+const SERVER_VERSION = '1.20.2';
 
 import express from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
 import * as cheerio from 'cheerio';
 import pg from 'pg';
-import { YoutubeTranscript } from 'youtube-transcript';
+
+const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || '';
 
 const { Pool } = pg;
 const app = express();
@@ -1122,15 +1132,40 @@ function extractEmbeddedYoutubeIds(html) {
 }
 
 async function fetchYoutubeTranscript(videoId) {
+  if (!YOUTUBE_API_KEY) { console.log('No YOUTUBE_API_KEY set'); return null; }
   try {
-    const transcript = await YoutubeTranscript.fetchTranscript(videoId);
-    if (!transcript || transcript.length === 0) return null;
-    // Combine all segments into one text, limit to ~3000 words
-    const text = transcript.map(function(t){ return t.text; }).join(' ').replace(/\s+/g, ' ').trim();
+    // Step 1: get caption tracks list
+    const captionsUrl = `https://www.googleapis.com/youtube/v3/captions?part=snippet&videoId=${videoId}&key=${YOUTUBE_API_KEY}`;
+    const captionsRes = await fetch(captionsUrl);
+    if (!captionsRes.ok) { console.log('YouTube captions list failed:', captionsRes.status); return null; }
+    const captionsData = await captionsRes.json();
+    const items = captionsData.items || [];
+    if (items.length === 0) { console.log('No captions for', videoId); return null; }
+
+    // Prefer English, then any language
+    const track = items.find(function(i){ return i.snippet.language === 'en' || i.snippet.language === 'en-US'; })
+                || items.find(function(i){ return i.snippet.trackKind === 'asr'; }) // auto-generated
+                || items[0];
+
+    // Step 2: fetch the actual transcript using timedtext endpoint (no auth needed)
+    const timedTextUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${track.snippet.language}&fmt=json3`;
+    const ttRes = await fetch(timedTextUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    if (!ttRes.ok) { console.log('timedtext fetch failed:', ttRes.status); return null; }
+    const ttData = await ttRes.json();
+    const events = ttData.events || [];
+    const text = events
+      .filter(function(e){ return e.segs; })
+      .map(function(e){ return e.segs.map(function(s){ return s.utf8||''; }).join(''); })
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!text || text.length < 50) { console.log('Transcript too short for', videoId); return null; }
     const words = text.split(' ');
-    return words.length > 3000 ? words.slice(0, 3000).join(' ') + '...' : text;
+    const result = words.length > 3000 ? words.slice(0, 3000).join(' ') + '...' : text;
+    console.log(`YouTube transcript fetched for ${videoId}, ${words.length} words`);
+    return result;
   } catch(e) {
-    console.log('YouTube transcript not available for', videoId, ':', e.message);
+    console.log('YouTube transcript error for', videoId, ':', e.message);
     return null;
   }
 }
@@ -1204,6 +1239,36 @@ async function fetchFromNews(url) {
 async function fetchFromYoutube(url) {
   const videoId = extractYoutubeId(url);
   if (!videoId) throw new Error('Could not extract YouTube video ID from URL.');
+
+  // Fetch video metadata to check duration and live status
+  if (YOUTUBE_API_KEY) {
+    const metaUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,liveStreamingDetails&id=${videoId}&key=${YOUTUBE_API_KEY}`;
+    const metaRes = await fetch(metaUrl);
+    if (metaRes.ok) {
+      const metaData = await metaRes.json();
+      const item = (metaData.items || [])[0];
+      if (item) {
+        // Check for live/streaming video
+        const liveBroadcastContent = item.snippet?.liveBroadcastContent;
+        if (liveBroadcastContent === 'live') {
+          throw new Error('This video is currently live streaming. Live videos cannot be scanned — please try again after the stream ends.');
+        }
+
+        // Check duration — ISO 8601 format e.g. PT10M30S
+        const duration = item.contentDetails?.duration || '';
+        const durationMatch = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+        if (durationMatch) {
+          const hours = parseInt(durationMatch[1] || 0);
+          const minutes = parseInt(durationMatch[2] || 0);
+          const totalMinutes = hours * 60 + minutes;
+          if (hours > 0 || totalMinutes > 10) {
+            throw new Error(`This video is ${hours > 0 ? hours + 'h ' : ''}${minutes}m long. Who\'s Behind That? only supports videos up to 10 minutes. Please paste the relevant transcript manually instead.`);
+          }
+        }
+      }
+    }
+  }
+
   const transcript = await fetchYoutubeTranscript(videoId);
   if (!transcript) throw new Error('No transcript available for this YouTube video. You can paste the video text manually instead.');
   // Try to get title via oEmbed
