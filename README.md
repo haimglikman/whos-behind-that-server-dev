@@ -1,3 +1,7 @@
+### v1.20.9 — bug fix (server-dev) | Client: v1.15.11 | Admin: v2.13.15
+- Fixed TranscriptAPI response parsing — field is transcript[] not segments[]
+- Removed debug logging
+
 ### v1.20.8 — debug (server-dev) | Client: v1.15.11 | Admin: v2.13.15
 - Added raw response logging to TranscriptAPI call to diagnose segments structure
 
