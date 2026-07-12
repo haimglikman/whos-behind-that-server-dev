@@ -5,7 +5,11 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
-// v1.20.6 — Switched to TranscriptAPI.com for YouTube transcript fetching.
+// v1.20.7 — Fixed TranscriptAPI endpoint URL and response parsing.
+//            Correct endpoint: /api/v2/youtube/transcript?video_url=...
+//            Correct response field: segments[] not transcript[].
+//
+// v1.20.6 — Switched to TranscriptAPI.com.
 //            Clean REST API, handles cloud IP blocking, 100 free credits/month.
 //            Requires transcriptapi_API_KEY env var on Render.
 //
@@ -161,7 +165,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '1.20.6';
+const SERVER_VERSION = '1.20.7';
 
 import express from 'express';
 import cors from 'cors';
@@ -1152,16 +1156,17 @@ function extractEmbeddedYoutubeIds(html) {
 async function fetchYoutubeTranscript(videoId) {
   if (!TRANSCRIPT_API_KEY) { console.log('No TRANSCRIPT_API_KEY set'); return null; }
   try {
-    const res = await fetch(`https://api.transcriptapi.com/v1/transcript?video_id=${videoId}&lang=en`, {
+    const res = await fetch(`https://transcriptapi.com/api/v2/youtube/transcript?video_url=${videoId}&format=json&include_timestamp=false`, {
       headers: { 'Authorization': `Bearer ${TRANSCRIPT_API_KEY}` }
     });
     if (!res.ok) {
-      console.log('TranscriptAPI failed:', res.status, await res.text());
+      const errText = await res.text();
+      console.log('TranscriptAPI failed:', res.status, errText);
       return null;
     }
     const data = await res.json();
-    // TranscriptAPI returns { transcript: [ { text, start, duration }, ... ] }
-    const segments = data.transcript || data.content || [];
+    // Response format: { title, duration, segments: [ { start, text }, ... ] }
+    const segments = data.segments || [];
     if (!segments.length) { console.log('TranscriptAPI: no segments for', videoId); return null; }
     const text = segments.map(function(s){ return s.text || ''; }).join(' ').replace(/\s+/g, ' ').trim();
     if (text.length < 50) { console.log('TranscriptAPI: transcript too short for', videoId); return null; }
