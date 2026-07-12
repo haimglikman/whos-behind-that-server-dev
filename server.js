@@ -165,7 +165,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '1.20.7';
+const SERVER_VERSION = '1.20.8';
 
 import express from 'express';
 import cors from 'cors';
@@ -1165,6 +1165,8 @@ async function fetchYoutubeTranscript(videoId) {
       return null;
     }
     const data = await res.json();
+    console.log('TranscriptAPI raw response keys:', Object.keys(data));
+    console.log('TranscriptAPI raw response sample:', JSON.stringify(data).slice(0, 300));
     // Response format: { title, duration, segments: [ { start, text }, ... ] }
     const segments = data.segments || [];
     if (!segments.length) { console.log('TranscriptAPI: no segments for', videoId); return null; }
