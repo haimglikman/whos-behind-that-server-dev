@@ -1,3 +1,6 @@
+### v1.20.8 — debug (server-dev) | Client: v1.15.11 | Admin: v2.13.15
+- Added raw response logging to TranscriptAPI call to diagnose segments structure
+
 ### v1.20.7 — bug fix (server-dev) | Client: v1.15.11 | Admin: v2.13.15
 - Fixed TranscriptAPI endpoint URL (/api/v2/youtube/transcript) and response parsing (segments[] field)
 
