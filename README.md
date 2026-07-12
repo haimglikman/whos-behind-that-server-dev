@@ -1,3 +1,8 @@
+### v1.20.6 — bug fix (server-dev) | Client: v1.15.11 | Admin: v2.13.15
+- Switched to TranscriptAPI.com for YouTube transcript fetching — handles cloud IP blocking that was causing all previous attempts to fail
+- Requires transcriptapi_API_KEY environment variable on Render
+- Clean REST API, 100 free credits/month, no proxy setup needed
+
 ### v1.20.5 — bug fix (server-dev) | Client: v1.15.11 | Admin: v2.13.15
 - Switched YouTube transcript fetching to page HTML approach — fetches video page, extracts caption baseUrl from ytInitialPlayerResponse, then fetches caption XML directly. More reliable than timedtext or innertube API.
 
