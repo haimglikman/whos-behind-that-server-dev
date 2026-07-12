@@ -1,3 +1,6 @@
+### v1.20.5 — bug fix (server-dev) | Client: v1.15.11 | Admin: v2.13.15
+- Switched YouTube transcript fetching to page HTML approach — fetches video page, extracts caption baseUrl from ytInitialPlayerResponse, then fetches caption XML directly. More reliable than timedtext or innertube API.
+
 ### v1.20.4 — bug fix (server-dev) | Client: v1.15.11 | Admin: v2.13.15
 - Switched to YouTube innertube API for transcript fetching — same internal API YouTube's frontend uses, works for ASR captions without OAuth
 
