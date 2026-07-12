@@ -5,7 +5,9 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
-// v1.20.7 — Fixed TranscriptAPI endpoint URL and response parsing.
+// v1.20.9 — Fixed TranscriptAPI response parsing: field is transcript[] not segments[].
+//
+// v1.20.8 — Debug logging.
 //            Correct endpoint: /api/v2/youtube/transcript?video_url=...
 //            Correct response field: segments[] not transcript[].
 //
@@ -165,7 +167,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '1.20.8';
+const SERVER_VERSION = '1.20.9';
 
 import express from 'express';
 import cors from 'cors';
@@ -1165,10 +1167,7 @@ async function fetchYoutubeTranscript(videoId) {
       return null;
     }
     const data = await res.json();
-    console.log('TranscriptAPI raw response keys:', Object.keys(data));
-    console.log('TranscriptAPI raw response sample:', JSON.stringify(data).slice(0, 300));
-    // Response format: { title, duration, segments: [ { start, text }, ... ] }
-    const segments = data.segments || [];
+    const segments = data.transcript || data.segments || [];
     if (!segments.length) { console.log('TranscriptAPI: no segments for', videoId); return null; }
     const text = segments.map(function(s){ return s.text || ''; }).join(' ').replace(/\s+/g, ' ').trim();
     if (text.length < 50) { console.log('TranscriptAPI: transcript too short for', videoId); return null; }
