@@ -5,7 +5,11 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
-// v1.20.4 — Switched to YouTube innertube API for transcript fetching —
+// v1.20.5 — Switched to fetching YouTube page HTML directly and extracting
+//            caption track baseUrl from ytInitialPlayerResponse. More reliable
+//            than timedtext or innertube API approaches.
+//
+// v1.20.4 — Switched to YouTube innertube API.
 //            same internal API YouTube's own frontend uses, works for ASR
 //            (auto-generated) captions without OAuth authentication.
 //
@@ -153,7 +157,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '1.20.4';
+const SERVER_VERSION = '1.20.5';
 
 import express from 'express';
 import cors from 'cors';
@@ -1142,56 +1146,58 @@ function extractEmbeddedYoutubeIds(html) {
 
 async function fetchYoutubeTranscript(videoId) {
   try {
-    // Use YouTube's internal innertube API — same as what the YouTube frontend uses
-    const body = {
-      context: {
-        client: { clientName: 'WEB', clientVersion: '2.20240101' }
-      },
-      videoId: videoId,
-      params: 'CgIIAQ%3D%3D' // requests auto-generated captions
-    };
-
-    const res = await fetch('https://www.youtube.com/youtubei/v1/get_transcript', {
-      method: 'POST',
+    // Fetch the YouTube video page — caption track URLs are embedded in ytInitialPlayerResponse
+    const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
       headers: {
-        'Content-Type': 'application/json',
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'X-YouTube-Client-Name': '1',
-        'X-YouTube-Client-Version': '2.20240101'
-      },
-      body: JSON.stringify(body)
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+      }
     });
+    if (!pageRes.ok) { console.log('YouTube page fetch failed:', pageRes.status); return null; }
+    const html = await pageRes.text();
 
-    if (!res.ok) { console.log('innertube transcript failed:', res.status); return null; }
-    const data = await res.json();
+    // Extract ytInitialPlayerResponse
+    const playerMatch = html.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\});(?:\s*(?:var|const|let)\s+\w+\s*=\s*\{|<\/script>)/s);
+    if (!playerMatch) { console.log('ytInitialPlayerResponse not found for', videoId); return null; }
 
-    // Extract text from transcript segments
-    const actions = data?.actions || [];
-    const segments = [];
-    function extractText(obj) {
-      if (!obj) return;
-      if (typeof obj === 'string') return;
-      if (obj.transcriptSegmentRenderer) {
-        const snippet = obj.transcriptSegmentRenderer.snippet;
-        if (snippet && snippet.runs) {
-          segments.push(snippet.runs.map(function(r){ return r.text||''; }).join(''));
-        }
-      }
-      if (typeof obj === 'object') {
-        Object.values(obj).forEach(function(v){ if (typeof v === 'object') extractText(v); });
-      }
-    }
-    actions.forEach(extractText);
+    let player;
+    try { player = JSON.parse(playerMatch[1]); }
+    catch(e) { console.log('Failed to parse ytInitialPlayerResponse:', e.message); return null; }
 
-    if (segments.length === 0) {
-      console.log('innertube: no segments found for', videoId);
-      return null;
-    }
+    const tracks = player?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+    if (tracks.length === 0) { console.log('No caption tracks found for', videoId); return null; }
 
-    const text = segments.join(' ').replace(/\s+/g, ' ').trim();
+    // Prefer English, then any
+    const track = tracks.find(function(t){ return t.languageCode === 'en'; })
+                || tracks.find(function(t){ return t.languageCode && t.languageCode.startsWith('en'); })
+                || tracks[0];
+
+    const captionUrl = track.baseUrl;
+    if (!captionUrl) { console.log('No baseUrl for caption track'); return null; }
+
+    // Fetch the caption XML
+    const capRes = await fetch(captionUrl + '&fmt=srv3', {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' }
+    });
+    if (!capRes.ok) { console.log('Caption fetch failed:', capRes.status); return null; }
+    const xml = await capRes.text();
+
+    // Parse XML
+    const matches = xml.match(/<text[^>]*>([^<]*)<\/text>/g) || [];
+    if (matches.length === 0) { console.log('No text elements in caption XML for', videoId); return null; }
+
+    const text = matches
+      .map(function(m){ return m.replace(/<[^>]+>/g, '').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&#39;/g,"'").replace(/&quot;/g,'"').trim(); })
+      .filter(Boolean)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (text.length < 50) { console.log('Transcript too short for', videoId); return null; }
     const words = text.split(' ');
     const result = words.length > 3000 ? words.slice(0, 3000).join(' ') + '...' : text;
-    console.log(`YouTube transcript fetched via innertube for ${videoId}, ${words.length} words`);
+    console.log(`YouTube transcript fetched via page HTML for ${videoId}, ${words.length} words`);
     return result;
   } catch(e) {
     console.log('YouTube transcript error for', videoId, ':', e.message);
