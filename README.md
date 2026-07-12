@@ -1,3 +1,7 @@
+### v1.21.0 (server-dev) | Client: v1.15.11 | Admin: v2.13.15
+- YouTube: meta check and transcript fetch now run in parallel — saves 300-500ms per scan
+- YouTube: in-memory transcript cache (up to 100 entries) — repeat scans of the same video return instantly without using a TranscriptAPI credit
+
 ### v1.20.9 — bug fix (server-dev) | Client: v1.15.11 | Admin: v2.13.15
 - Fixed TranscriptAPI response parsing — field is transcript[] not segments[]
 - Removed debug logging
