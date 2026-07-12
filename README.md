@@ -1,3 +1,6 @@
+### v1.20.7 — bug fix (server-dev) | Client: v1.15.11 | Admin: v2.13.15
+- Fixed TranscriptAPI endpoint URL (/api/v2/youtube/transcript) and response parsing (segments[] field)
+
 ### v1.20.6 — bug fix (server-dev) | Client: v1.15.11 | Admin: v2.13.15
 - Switched to TranscriptAPI.com for YouTube transcript fetching — handles cloud IP blocking that was causing all previous attempts to fail
 - Requires transcriptapi_API_KEY environment variable on Render
