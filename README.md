@@ -1,3 +1,14 @@
+### v2.0.0 (server) | Admin: v2.21.0 | Client: v1.18.1
+- New scoring engine — Jev screens, Claude judges:
+  - Non-English posts translated to English (Haiku) for screening
+  - Jev (TypeSafe) screens all entities in one request (2 questions per entity); only the shortlist goes to Claude
+  - Claude Opus 5.5 judges the shortlist in one structured-output call — replaces batch scoring, Phase 2 enrichment, and coherence check
+  - Adversarial-framing and quoted-clip rules built into the judge prompt; score computed in code
+- Cluster detection: Jev pre-screens post pairs; only likely connections reach Claude
+- All models configurable (Prompts tab / env vars); Sonnet 4.x deprecated and auto-replaced; no hardcoded models
+- Automatic fallback: without TYPESAFE_API_KEY or if Jev fails, all entities go to the judge
+- New env var: TYPESAFE_API_KEY. Response format unchanged.
+
 ### v1.21.0 (server-dev) | Client: v1.15.11 | Admin: v2.13.15
 - YouTube: meta check and transcript fetch now run in parallel — saves 300-500ms per scan
 - YouTube: in-memory transcript cache (up to 100 entries) — repeat scans of the same video return instantly without using a TranscriptAPI credit
