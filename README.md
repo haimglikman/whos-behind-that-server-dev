@@ -1,3 +1,8 @@
+### v2.0.1 — bug fix (server) | Admin: v2.21.0 | Client: v1.18.1
+- Fixed: Opus 5.5 rejects forced tool calls ("tool_choice type tool not supported") — the judge now uses tool_choice auto with an explicit instruction to call the tool
+- Claude calls adapt to per-model restrictions (temperature, forced tools), remember them, and skip the failing attempt on later calls
+- If the judge answers in text instead of calling the tool, its JSON is parsed as a fallback
+
 ### v2.0.0 (server) | Admin: v2.21.0 | Client: v1.18.1
 - New scoring engine — Jev screens, Claude judges:
   - Non-English posts translated to English (Haiku) for screening
