@@ -5,6 +5,129 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
+// v2.0.0 — New scoring engine: Jev screens, Claude judges.
+//             1. Hebrew/Arabic posts translated to English (fast model) — Jev's
+//                strongest language.
+//             2. Jev (TypeSafe) screens every entity in one request: two yes/no
+//                questions per entity (serves it? attacks its rivals?). Only the
+//                shortlist (≥ JEV_THRESHOLD, min 5, max 15) goes to Claude.
+//             3. Claude Opus judges the shortlist in ONE call using structured
+//                tool output — no JSON parsing. Scores, primary/secondary,
+//                why/missing; adversarial-framing and quoted-clip rules built in.
+//                pct computed in code (interest .55 / mo .35 / narrative .10).
+//                Replaces batch scoring, Phase 2 enrichment and coherence check.
+//             4. Cluster detection: Jev pre-screens post pairs; only likely
+//                connections go to Claude.
+//             5. Models configurable per task (Prompts tab / env vars); Sonnet
+//                4.x deprecated and auto-replaced; no hardcoded models.
+//             6. All Claude calls via claudeFetch (sampling-param + rate-limit retry).
+//             Fallback: without TYPESAFE_API_KEY or on Jev error, every entity
+//             goes to the judge (slower/costlier, same results).
+//             New env: TYPESAFE_API_KEY (+ optional JEV_*, CLAUDE_*_MODEL).
+//             Response format unchanged — admin/client work as-is.
+//
+// v1.28.0 — Video context: same yt-dlp call now also returns metadata
+//             (caption, hashtags, account, title, thumbnail). Video scans are
+//             sent to Claude with a generic context note (transcript = speech
+//             only, no on-screen text/visuals/speaker IDs; judge overall
+//             framing, not single quoted lines) + caption + transcript.
+//             Caption-only fallback when there is no usable speech.
+//             Account/title/thumbnail also feed carousel metadata.
+//
+// v1.27.0 — Video transcription re-architected: yt-dlp standalone binary
+//             (auto-downloaded to /tmp) + Groq Whisper. Cobalt removed
+//             entirely (tunnel returned 0-byte bodies on Render). No Python,
+//             no ffmpeg, no extra Render service. Groq call uses native
+//             fetch/FormData. Rebuilt from full v1.26.5 source — v1.26.7–
+//             v1.26.9 were built on a truncated file (server listener missing).
+//             Env: GROQ_API_KEY (COBALT_URL no longer used).
+//
+// v1.21.1 — Entity DB: added entities table, GET /entities/list and
+//            POST /entities/save endpoints. Admin pushes entities on every
+//            save/refresh/import. Client loads entities on page load.
+//
+// v1.24.0 — New feature: fetchFromNews now extracts og:image, og:title
+//             alongside article text and author — enables carousel post slides
+//             to show article headline, thumbnail and source favicon.
+//
+// v1.23.1 — Performance: Phase 2 enrichment now runs once for ALL top
+//             matches combined (was once per batch). Parallel batches already
+//             in place. Rate limit fallback: if 429, retries sequentially.
+//
+// v1.23.0 — New two-phase scoring architecture:
+//             Phase 1: numbers-only JSON (no text fields, no Hebrew/Arabic
+//             in JSON values) — eliminates JSON parse errors on Hebrew content.
+//             Phase 2: separate enrichment call for why/missing fields,
+//             explicitly English-only output.
+//             Phase 2 failure is non-fatal — scores remain valid.
+//
+// v1.22.17 — Rewrote extractJSON.
+//
+// v1.22.16 — Added stop_reason logging.
+//
+// v1.22.15 — Increased max_tokens for scan and coherence.
+//             to prevent truncated JSON responses when entity database is large.
+//
+// v1.22.14 — Fixed JSON parsing in coherenceCheck and scoreBatch.
+//             using plain JSON.parse instead of extractJSON, causing failures
+//             on Hebrew/Arabic content. Now use extractJSON with raw logging.
+//
+// v1.22.13 — Improved extractJSON.
+//             quote repair for unescaped quotes inside Hebrew/Arabic strings.
+//             Added raw response logging on all parse failures.
+//
+// v1.22.12 — Hardened extractJSON.
+//             char sanitization, then regex field extraction fallback.
+//             Fixes "Unexpected non-whitespace character" errors on Hebrew/Arabic
+//             content with embedded newlines or special chars in JSON strings.
+//
+// v1.22.11 — Smart URL detection.
+//             news fetching (3-tier) instead of returning "Unsupported URL".
+//             NEWS_DOMAINS whitelist still used for fast-path detection but
+//             no longer the only way to trigger news fetch.
+//
+// v1.22.10 — Added missing news domains.
+//             that were returning "Unsupported URL" instead of attempting fetch.
+//
+// v1.22.9 — Added error logging to news fetch tiers.
+//
+// v1.22.8 — Three-tier news article fetching.
+//            Tier 1: basic headers (existing approach, 3 user agents).
+//            Tier 2: full browser-like headers (sec-ch-ua, Sec-Fetch-*, Referer
+//            google.com) to bypass aggressive anti-bot measures.
+//            Tier 3: Archive.org fallback for blocked/paywalled articles.
+//            extractArticle() and enrichWithYoutube() extracted as helpers.
+//
+// v1.22.7 — Client session tracking.
+//            POST /client/register (called on client page load),
+//            GET /client/sessions (returns all known versions with device count).
+//
+// v1.22.6 — bug fix: SyntaxError in synopsis prompt interpolation.
+//            object literal. Moved before the fetch call.
+//
+// v1.22.5 — bug fix: DB prompts template variables sent as literal strings.
+//            sent as literal strings. Added interpolatePrompt() helper that
+//            resolves all ${var} placeholders before sending to Claude.
+//            Affects all 6 prompts: scan, coherence, connection, synopsis,
+//            actor, convergent.
+//
+// v1.22.4 — bug fix: promptCache ReferenceError on startup.
+//            causing ReferenceError on startup. Fixed by using plain string
+//            defaults in promptCache object literal.
+//
+// v1.22.3 — Prompt management system.
+//            - New prompts table in DB (name, version, model, prompt_text, is_active)
+//            - GET /prompts/list, GET /prompts/history/:name, POST /prompts/save,
+//              POST /prompts/activate/:id endpoints
+//            - In-memory prompt cache loaded from DB on startup
+//            - All 6 prompts (scan, coherence, connection, synopsis, actor,
+//              convergent) now use model from cache; admin can edit via UI
+//
+// v1.22.2 — Tightened cluster connection detection.
+//            - Weak connections now filtered out (only medium/strong accepted)
+//            - Detection prompt made more explicit: same-day posts about same
+//              event from opposing camps are NOT a connection.
+//
 // v1.21.0 — YouTube performance improvements:
 //            - Meta check and transcript fetch now run in parallel (Promise.all)
 //              instead of sequentially — saves 300-500ms per scan.
@@ -173,16 +296,120 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '1.21.0';
+const SERVER_VERSION = '2.0.0';
 
 import express from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
 import * as cheerio from 'cheerio';
 import pg from 'pg';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import nodeFs from 'fs';
+import nodeOs from 'os';
+import nodePath from 'path';
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || '';
 const TRANSCRIPT_API_KEY = process.env.transcriptapi_API_KEY || '';
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
+
+// ─────────────────────────────────────────────
+// ENGINE & MODEL CONFIG (v2.0.0) — everything overridable via Render env vars
+// ─────────────────────────────────────────────
+const ANTHROPIC_URL      = process.env.ANTHROPIC_API_URL || 'https://api.anthropic.com/v1/messages';
+const TYPESAFE_URL       = process.env.TYPESAFE_API_URL || 'https://api.typesafe.ai/v1/systemone';
+const TYPESAFE_API_KEY   = process.env.TYPESAFE_API_KEY || '';
+const JEV_MODEL          = process.env.JEV_MODEL || 'jev-1.13.0';      // pinned version (TypeSafe recommends pinning)
+const JEV_THRESHOLD      = parseFloat(process.env.JEV_THRESHOLD || '0.3');   // entity passes screening at/above this
+const JEV_MIN_SHORTLIST  = parseInt(process.env.JEV_MIN_SHORTLIST || '5', 10); // always send at least this many to Claude
+const JEV_MAX_SHORTLIST  = parseInt(process.env.JEV_MAX_SHORTLIST || '15', 10);
+const JEV_PAIR_THRESHOLD = parseFloat(process.env.JEV_PAIR_THRESHOLD || '0.25');
+
+const DEFAULT_MODEL = process.env.CLAUDE_DEFAULT_MODEL || 'claude-sonnet-5';
+const DEEP_MODEL    = process.env.CLAUDE_DEEP_MODEL    || 'claude-opus-5-5';
+const FAST_MODEL    = process.env.CLAUDE_FAST_MODEL    || 'claude-haiku-4-5-20251001';
+const TASK_MODEL_DEFAULTS = { deep_score: DEEP_MODEL, translate: FAST_MODEL, connection: FAST_MODEL };
+const LEGACY_MODEL_RE = /^claude-(sonnet|opus)-4/;   // deprecated generation — always replaced
+
+// Prompt cache — loaded from DB on startup, refreshed when admin saves.
+// model:null means "use the task default above".
+const promptCache = {
+  deep_score: { model: null, text: null },   // v2 judge (replaces scan + coherence)
+  translate:  { model: null, text: null },
+  connection: { model: null, text: null },
+  synopsis:   { model: null, text: null },
+  actor:      { model: null, text: null },
+  convergent: { model: null, text: null },
+  websearch:  { model: null, text: null },
+  entities:   { model: null, text: null },
+  publication:{ model: null, text: null },
+  scan:       { model: null, text: null },   // legacy — not used by the v2 engine
+  coherence:  { model: null, text: null }    // legacy — not used by the v2 engine
+};
+
+async function loadPromptsFromDB() {
+  if (!db) return;
+  try {
+    const count = await db.query(`SELECT COUNT(*) FROM prompts`);
+    if (parseInt(count.rows[0].count) === 0) {
+      console.log('No prompts in DB — admin must seed them via the Prompts tab.');
+    }
+    const result = await db.query(
+      `SELECT DISTINCT ON (name) name, model, prompt_text FROM prompts WHERE is_active=TRUE ORDER BY name, created_at DESC`
+    );
+    result.rows.forEach(r => {
+      if (promptCache[r.name]) {
+        promptCache[r.name].model = r.model;
+        promptCache[r.name].text = r.prompt_text;
+      }
+    });
+    console.log('Prompts loaded from DB:', result.rows.length);
+  } catch(e) { console.warn('Could not load prompts from DB:', e.message); }
+}
+
+function interpolatePrompt(template, vars) {
+  return template.replace(/\$\{([^}]+)\}/g, function(match, key) {
+    const val = vars[key];
+    return val !== undefined ? String(val) : match;
+  });
+}
+
+function getPrompt(name) {
+  return promptCache[name]?.text || null;
+}
+const _legacyWarned = {};
+function getModel(name) {
+  const stored = promptCache[name]?.model;
+  if (stored && !LEGACY_MODEL_RE.test(stored)) return stored;
+  const fallback = TASK_MODEL_DEFAULTS[name] || DEFAULT_MODEL;
+  if (stored && !_legacyWarned[name]) {
+    _legacyWarned[name] = true;
+    console.warn(`Model for '${name}' is set to deprecated ${stored} — using ${fallback} instead`);
+  }
+  return fallback;
+}
+
+// Every Claude call goes through here: retries without sampling params if a
+// model rejects them, and retries once on rate-limit / overload.
+async function claudeFetch(url, opts) {
+  let res = await fetch(url, opts);
+  if (res.status === 400 && opts && typeof opts.body === 'string') {
+    let msg = '';
+    try { msg = JSON.stringify(await res.clone().json()); } catch (_) {}
+    if (/temperature|top_p|top_k/i.test(msg)) {
+      const body = JSON.parse(opts.body);
+      delete body.temperature; delete body.top_p; delete body.top_k;
+      console.warn('Model ' + body.model + ' rejected sampling params — retrying without them');
+      opts = Object.assign({}, opts, { body: JSON.stringify(body) });
+      res = await fetch(url, opts);
+    }
+  }
+  if (res.status === 429 || res.status === 529) {
+    await new Promise(r => setTimeout(r, 2500));
+    res = await fetch(url, opts);
+  }
+  return res;
+}
 
 const { Pool } = pg;
 const app = express();
@@ -301,6 +528,28 @@ async function initDB() {
         sort_order INTEGER DEFAULT 0,
         active BOOLEAN DEFAULT TRUE
       );
+      CREATE TABLE IF NOT EXISTS prompts (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        version TEXT NOT NULL DEFAULT '1.0.0',
+        model TEXT NOT NULL,
+        prompt_text TEXT NOT NULL,
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS entities (
+        id TEXT PRIMARY KEY,
+        data JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_by TEXT DEFAULT 'admin',
+        version TEXT DEFAULT '1.0.0'
+      );
+      CREATE TABLE IF NOT EXISTS client_sessions (
+        device_id TEXT PRIMARY KEY,
+        client_version TEXT NOT NULL,
+        last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
     `);
     // Seed default FAQs if table is empty
     const faqCount = await db.query(`SELECT COUNT(*) FROM faq`);
@@ -342,6 +591,7 @@ async function initDB() {
         [30,'Can someone know what I scanned for?','Your scan history is stored locally on your device and is private to you. The service operator (Who\'s Behind That?) can see anonymized scan data — the post URL, content, and results — linked only to a randomly generated device identifier. No personal information is collected or visible to us: no IP address, no email, no device identifiers such as MAC address, and no account information of any kind. Your scans are never shared with third parties.','Privacy',3],
         [31,'Is my data used to train AI models?','No. Your scan data is not used to train Claude or any other AI model. Post text is sent to Anthropic\'s Claude API for analysis and is subject to Anthropic\'s privacy policy, but Who\'s Behind That? does not share your data for training purposes.','Privacy',4],
         [32,'Does Who\'s Behind That? use cookies?','No, Who\'s Behind That? does not use cookies. Instead, it uses your browser\'s local storage to keep track of an anonymous device identifier, your scan history, and your daily quota — all of which stay on your device and are never sent automatically with requests the way cookies are. There\'s no cross-site tracking and no third-party tracking technology involved.','Privacy',5],
+        [33,'Does WBT detect bots?','Yes — when you research an actor, WBT estimates the likelihood that the account is a bot or inauthentic account. The assessment is shown as a percentage alongside the actor profile.\n\nThe detection is powered by Claude\'s web search, which surfaces publicly available profile information across platforms — X, Facebook, Instagram, news publications, and more. Since it relies on open-source intelligence rather than direct API access, signal quality varies by platform and account visibility.\n\nThe following signals are evaluated: bio authenticity (does it contain verifiable specifics like a job title, institution, or city, or is it a generic ideological template?); activity inflection (is there a sudden spike in posting volume from an otherwise dormant old account — a classic sign of a purchased or hijacked account?); follower/following ratio (mass-following with few followers back is a known signal); narrative focus (does the account post exclusively about one geopolitical topic with no personal content?); and account name patterns (suspiciously ideological or generated-looking names suggest a manufactured identity).\n\nJournalists and public figures with a verifiable publication history typically score very low. The score is a directional signal, not forensic proof.','Scanning logic',6],
       ];
       for (const [sortOrder, question, answer, group, so] of faqs) {
         await db.query(
@@ -352,6 +602,7 @@ async function initDB() {
       console.log('FAQ: seeded ' + faqs.length + ' default items.');
     }
     console.log('Database ready. Table scans exists or was created.');
+    await loadPromptsFromDB();
   } catch (err) {
     console.error('DB init error:', err.message);
     db = null;
@@ -498,10 +749,181 @@ app.delete('/faq/:id', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// HEALTH CHECK
+// GET /entities/list
 // ─────────────────────────────────────────────
+app.get('/entities/list', async (req, res) => {
+  if (!db) return res.json({ success: false, error: 'DB not available' });
+  try {
+    const result = await db.query(`SELECT data, updated_at, version FROM entities ORDER BY updated_at DESC LIMIT 1`);
+    if (result.rows.length === 0) return res.json({ success: false, error: 'No entities found' });
+    res.json({ success: true, entities: result.rows[0].data, updatedAt: result.rows[0].updated_at, version: result.rows[0].version });
+  } catch(err) {
+    console.error('entities/list error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// POST /entities/save
+// ─────────────────────────────────────────────
+app.post('/entities/save', async (req, res) => {
+  const { entities, version } = req.body;
+  if (!entities || !Array.isArray(entities)) return res.status(400).json({ error: 'entities array required' });
+  if (!db) return res.json({ success: true, warning: 'DB not available' });
+  try {
+    await db.query(
+      `INSERT INTO entities (id, data, updated_at, version) VALUES ('main', $1, NOW(), $2)
+       ON CONFLICT (id) DO UPDATE SET data=$1, updated_at=NOW(), version=$2`,
+      [JSON.stringify(entities), version || '1.0.0']
+    );
+    res.json({ success: true });
+  } catch(err) {
+    console.error('entities/save error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// GET /prompts/list
+// ─────────────────────────────────────────────
+app.get('/prompts/list', async (req, res) => {
+  if (!db) return res.json({ success: false, error: 'DB not available' });
+  try {
+    const result = await db.query(
+      `SELECT DISTINCT ON (name) id, name, version, model, prompt_text, created_at
+       FROM prompts WHERE is_active=TRUE ORDER BY name, created_at DESC`
+    );
+    res.json({ success: true, prompts: result.rows });
+  } catch(err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// GET /prompts/history/:name
+// ─────────────────────────────────────────────
+app.get('/prompts/history/:name', async (req, res) => {
+  if (!db) return res.json({ success: false, error: 'DB not available' });
+  try {
+    const result = await db.query(
+      `SELECT id, name, version, model, prompt_text, is_active, created_at
+       FROM prompts WHERE name=$1 ORDER BY created_at DESC LIMIT 50`,
+      [req.params.name]
+    );
+    res.json({ success: true, history: result.rows });
+  } catch(err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// POST /prompts/save
+// ─────────────────────────────────────────────
+app.post('/prompts/save', async (req, res) => {
+  const { name, version, model, prompt_text } = req.body;
+  if (!name || !model || !prompt_text) return res.status(400).json({ error: 'name, model, prompt_text required' });
+  if (!db) return res.json({ success: true, warning: 'DB not available' });
+  try {
+    // Deactivate previous versions for this prompt
+    await db.query(`UPDATE prompts SET is_active=FALSE WHERE name=$1`, [name]);
+    // Insert new version
+    await db.query(
+      `INSERT INTO prompts (name, version, model, prompt_text, is_active) VALUES ($1,$2,$3,$4,TRUE)`,
+      [name, version || '1.0.0', model, prompt_text]
+    );
+    // Reload into cache immediately
+    if (promptCache[name]) {
+      promptCache[name].model = model;
+      promptCache[name].text = prompt_text;
+    }
+    res.json({ success: true });
+  } catch(err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// POST /prompts/activate/:id — roll back to a specific version
+// ─────────────────────────────────────────────
+app.post('/prompts/activate/:id', async (req, res) => {
+  if (!db) return res.json({ success: true, warning: 'DB not available' });
+  try {
+    const row = await db.query(`SELECT * FROM prompts WHERE id=$1`, [req.params.id]);
+    if (!row.rows.length) return res.status(404).json({ error: 'Version not found' });
+    const p = row.rows[0];
+    await db.query(`UPDATE prompts SET is_active=FALSE WHERE name=$1`, [p.name]);
+    await db.query(`UPDATE prompts SET is_active=TRUE WHERE id=$1`, [req.params.id]);
+    if (promptCache[p.name]) {
+      promptCache[p.name].model = p.model;
+      promptCache[p.name].text = p.prompt_text;
+    }
+    res.json({ success: true });
+  } catch(err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// ─────────────────────────────────────────────
+// POST /client/register
+// ─────────────────────────────────────────────
+app.post('/client/register', async (req, res) => {
+  const { deviceId, clientVersion } = req.body;
+  if (!deviceId || !clientVersion) return res.json({ success: false });
+  if (!db) return res.json({ success: true, warning: 'DB not available' });
+  try {
+    await db.query(
+      `INSERT INTO client_sessions (device_id, client_version, last_seen, first_seen)
+       VALUES ($1, $2, NOW(), NOW())
+       ON CONFLICT (device_id) DO UPDATE SET client_version=$2, last_seen=NOW()`,
+      [deviceId, clientVersion]
+    );
+    res.json({ success: true });
+  } catch(err) {
+    console.error('client/register error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// GET /client/sessions
+// ─────────────────────────────────────────────
+app.get('/client/sessions', async (req, res) => {
+  if (!db) return res.json({ success: false, error: 'DB not available' });
+  try {
+    const result = await db.query(
+      `SELECT client_version, COUNT(*) as device_count, MAX(last_seen) as last_seen, MIN(first_seen) as first_seen
+       FROM client_sessions GROUP BY client_version ORDER BY client_version DESC`
+    );
+    res.json({ success: true, sessions: result.rows });
+  } catch(err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// GET /proxy-image — proxy external images for canvas (CORS bypass)
+// ─────────────────────────────────────────────
+app.get('/proxy-image', async (req, res) => {
+  const url = req.query.url;
+  if (!url || !/^https?:\/\//.test(url)) return res.status(400).json({ error: 'Invalid URL' });
+  try {
+    const response = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' }
+    });
+    if (!response.ok) return res.status(response.status).end();
+    const contentType = response.headers.get('content-type') || 'image/jpeg';
+    const buffer = await response.arrayBuffer();
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.send(Buffer.from(buffer));
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: "Who's Behind That? API", version: SERVER_VERSION, db: !!db });
+  res.json({ status: 'ok', service: "Who's Behind That? API", version: SERVER_VERSION, db: !!db,
+    engine: { triage: TYPESAFE_API_KEY ? JEV_MODEL : 'off', judge: getModel('deep_score'), default: DEFAULT_MODEL } });
 });
 
 // ─────────────────────────────────────────────
@@ -553,16 +975,40 @@ app.post('/fetch-and-analyze', async (req, res) => {
   if (!ANTHROPIC_KEY) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured on server' });
   try {
     const platform = detectPlatform(url);
-    if (!platform) return res.status(400).json({ error: 'Unsupported URL. Paste a URL from X, Facebook, Instagram, YouTube, or a supported news website.' });
+    if (!platform) return res.status(400).json({ error: 'Unsupported URL. Paste a URL from X, Facebook, Instagram, TikTok, YouTube, or a supported news website.' });
     let postData;
-    if (platform === 'x') postData = await fetchFromX(url);
-    else if (platform === 'facebook') postData = await fetchFromFacebook(url);
-    else if (platform === 'instagram') postData = await fetchFromInstagram(url);
-    else if (platform === 'youtube') postData = await fetchFromYoutube(url);
-    else if (platform === 'news') postData = await fetchFromNews(url);
-    if (!postData.text) return res.status(422).json({ error: 'Could not extract text. The content may be private, paywalled, or the platform may be blocking access.' });
-    const minLen = (platform === 'news' || platform === 'youtube') ? 50 : 100;
-    if (postData.text.length < minLen) return res.status(422).json({ error: `Fetched text is too short (${postData.text.length} chars). Please paste the article text manually.` });
+
+    // Video platforms: try yt-dlp + Groq Whisper first
+    if (isVideoUrl(url) && GROQ_API_KEY) {
+      console.log('Video URL detected, attempting yt-dlp + Groq transcript:', url);
+      const video = await fetchVideoTranscript(url);
+      if (video) {
+        postData = {
+          text: buildVideoAnalysisText(video, platform),
+          source: platform, domain: extractDomain(url), hasVideoTranscript: true,
+          author: video.uploader, authorHandle: video.uploader,
+          ogTitle: video.title || (video.caption ? video.caption.slice(0, 120) : null),
+          ogImage: video.thumbnail
+        };
+      }
+    }
+
+    // Fall back to regular platform fetch if no video transcript
+    if (!postData) {
+      if (platform === 'x') postData = await fetchFromX(url);
+      else if (platform === 'facebook') postData = await fetchFromFacebook(url);
+      else if (platform === 'instagram') postData = await fetchFromInstagram(url);
+      else if (platform === 'youtube') postData = await fetchFromYoutube(url);
+      else if (platform === 'tiktok') {
+        if (!GROQ_API_KEY) throw new Error('TikTok requires GROQ_API_KEY on the server. Paste the caption manually instead.');
+        throw new Error('Could not transcribe this TikTok video — it may be private, removed, or region-locked. Paste the caption manually instead.');
+      }
+      else if (platform === 'news') postData = await fetchFromNews(url);
+    }
+
+    if (!postData || !postData.text) return res.status(422).json({ error: 'Could not extract text. The content may be private, paywalled, or the platform may be blocking access. Try pasting the text manually.' });
+    const minLen = (platform === 'news' || platform === 'youtube') ? 50 : 30;
+    if (postData.text.length < minLen) return res.status(422).json({ error: `Fetched text is too short (${postData.text.length} chars). Please paste the content text manually.` });
     const analysis = await scoreWithClaude(postData.text, entities);
     const responseUrl = postData.normalizedUrl || url;
     const tokens = analysis._tokens || { input: 0, output: 0 };
@@ -643,11 +1089,11 @@ Respond ONLY with valid JSON:
   "comments": "updated text or null if unchanged"
 }`;
 
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      const response = await claudeFetch(ANTHROPIC_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-5', max_tokens: 1000, temperature: 0,
+          model: getModel('entities'), max_tokens: 1000, temperature: 0,
           tools: [{ type: 'web_search_20250305', name: 'web_search' }],
           messages: [{ role: 'user', content: prompt }]
         })
@@ -666,7 +1112,7 @@ Respond ONLY with valid JSON:
         result.entityName = entity.name;
         return result;
       } catch(parseErr) {
-        console.warn(`JSON parse failed for ${entity.name}:`, parseErr.message);
+        console.warn(`JSON parse failed for ${entity.name}:`, parseErr.message, '| raw:', raw.slice(0, 300));
         return { changed: false, entityId: entity.id, entityName: entity.name, error: 'Parse error', _tokens: { input: data.usage?.input_tokens || 0, output: data.usage?.output_tokens || 0 } };
       }
     }));
@@ -861,6 +1307,10 @@ app.post('/investigate/detect', async (req, res) => {
       }
     }
 
+    // v2.0: Jev pre-gate — only pairs that look connected go to Claude
+    const gate = await jevGatePairs(pairs);
+    const pairsToCheck = gate.pairs;
+
     // Optimization 1: batch pairs — 4 pairs per Claude call instead of 1
     // Optimization 2: use Haiku for detection (pattern matching, not deep synthesis)
     // Optimization 3: trim prompts — lead with structured data, short text excerpt only
@@ -878,8 +1328,8 @@ app.post('/investigate/detect', async (req, res) => {
         .trim();
     };
 
-    for (let b = 0; b < pairs.length; b += BATCH_SIZE) {
-      const batch = pairs.slice(b, b + BATCH_SIZE);
+    for (let b = 0; b < pairsToCheck.length; b += BATCH_SIZE) {
+      const batch = pairsToCheck.slice(b, b + BATCH_SIZE);
 
       const pairsText = batch.map(([a, bPost], idx) => {
         const aDate = a.ts ? new Date(a.ts).toISOString().slice(0,10) : '?';
@@ -893,7 +1343,18 @@ app.post('/investigate/detect', async (req, res) => {
 
       const prompt = `You are a narrative analyst for Who's Behind That?, focused on the Israeli-Palestinian conflict and Israeli domestic politics.
 
-For each pair below, decide if there is a meaningful NARRATIVE CONNECTION — same framing goal, coordination signal, narrative escalation, or explicit reference. Not just topical overlap.
+For each pair below, decide if there is a meaningful NARRATIVE CONNECTION. The bar is HIGH — connection requires more than topical overlap or being published on the same day about the same event.
+
+A REAL connection means:
+- The posts share the same specific framing goal (not just the same topic)
+- One post directly responds to or escalates the other's narrative
+- Both posts push the same specific claim or talking point
+- There are signs of coordination (same language, same framing, same sequence)
+
+NOT a connection:
+- Two posts about the same event from opposing camps (that's just the news cycle)
+- Two posts published on the same day about the same political figure
+- Topical similarity without shared narrative purpose
 
 ${pairsText}
 
@@ -908,14 +1369,14 @@ Respond ONLY with a JSON array, one object per pair, in order:
   }
 ]`;
 
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      const response = await claudeFetch(ANTHROPIC_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
         body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
+          model: getModel('connection'),
           max_tokens: 800,
           temperature: 0,
-          messages: [{ role: 'user', content: prompt }]
+          messages: [{ role: 'user', content: getPrompt('connection') ? interpolatePrompt(getPrompt('connection'), {pairsText}) : prompt }]
         })
       });
       if (!response.ok) {
@@ -950,7 +1411,7 @@ Respond ONLY with a JSON array, one object per pair, in order:
       });
     }
 
-    const connections = allResults.filter(r => r.connected);
+    const connections = allResults.filter(r => r.connected && r.strength !== 'weak');
 
     // Build clusters using union-find
     const postIds = posts.map(p => p.scanId);
@@ -970,7 +1431,7 @@ Respond ONLY with a JSON array, one object per pair, in order:
     const clusters = Object.values(clusterMap).filter(c => c.length > 1);
     const isolated = postIds.filter(id => !clusters.flat().includes(id));
 
-    res.json({ success: true, connections, clusters, isolated });
+    res.json({ success: true, connections, clusters, isolated, triage: gate.stats });
   } catch(err) {
     console.error('investigate/detect error:', err.message);
     res.status(500).json({ error: err.message });
@@ -1016,10 +1477,12 @@ Respond ONLY with valid JSON:
   "postSummaries": ["one sentence narrative summary for POST 1", "one sentence for POST 2", ...]
 }`;
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const dbSynopsisPrompt = getPrompt('synopsis');
+    const finalSynopsisPrompt = dbSynopsisPrompt ? interpolatePrompt(dbSynopsisPrompt, { postsText, 'clusterPosts.length': String(clusterPosts.length) }) : prompt;
+    const response = await claudeFetch(ANTHROPIC_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: 'claude-sonnet-4-5', max_tokens: 900, temperature: 0, messages: [{ role: 'user', content: prompt }] })
+      body: JSON.stringify({ model: getModel('synopsis'), max_tokens: 900, temperature: 0, messages: [{ role: 'user', content: finalSynopsisPrompt }] })
     });
     if (!response.ok) throw new Error(`API error: ${response.status}`);
     const data = await response.json();
@@ -1107,10 +1570,10 @@ Respond ONLY with valid JSON:
 
 Or: { "found": false }`;
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const response = await claudeFetch(ANTHROPIC_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: 'claude-sonnet-4-5', max_tokens: 600, temperature: 0, messages: [{ role: 'user', content: prompt }] })
+    body: JSON.stringify({ model: getModel('convergent'), max_tokens: 600, temperature: 0, messages: [{ role: 'user', content: getPrompt('convergent') ? interpolatePrompt(getPrompt('convergent'), {postText, primaryNames, entitySummaries}) : prompt }] })
   });
   if (!response.ok) { const err = await response.json().catch(()=>({})); throw new Error('Claude API error: ' + (err.error?.message || response.status)); }
   const data = await response.json();
@@ -1125,10 +1588,17 @@ Or: { "found": false }`;
 
 function detectPlatform(url) {
   if (/x\.com|twitter\.com/i.test(url)) return 'x';
-  if (/facebook\.com|fb\.com/i.test(url)) return 'facebook';
+  if (/facebook\.com|fb\.com|fb\.watch/i.test(url)) return 'facebook';
   if (/instagram\.com/i.test(url)) return 'instagram';
   if (/youtube\.com|youtu\.be/i.test(url)) return 'youtube';
+  if (/tiktok\.com/i.test(url)) return 'tiktok';
   if (isNewsDomain(url)) return 'news';
+  // Fall back to news for any URL with an article-like path
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname;
+    if (path && path.length > 1 && path !== '/') return 'news';
+  } catch(e) {}
   return null;
 }
 
@@ -1187,70 +1657,322 @@ async function fetchYoutubeTranscript(videoId) {
   }
 }
 
+// ─────────────────────────────────────────────
+// VIDEO TRANSCRIPTION — yt-dlp (standalone binary) + Groq Whisper
+// Supports TikTok, Instagram, Facebook, X video. No Python, no ffmpeg,
+// no extra Render service. Binary is downloaded once to /tmp on first use.
+// ─────────────────────────────────────────────
+const execFileAsync = promisify(execFile);
+const YTDLP_PATH = nodePath.join(nodeOs.tmpdir(), 'yt-dlp');
+const YTDLP_URL = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux';
+let ytdlpReady = null; // shared promise so concurrent requests don't double-download
+
+function ensureYtdlp() {
+  if (ytdlpReady) return ytdlpReady;
+  ytdlpReady = (async () => {
+    if (nodeFs.existsSync(YTDLP_PATH)) return YTDLP_PATH;
+    console.log('yt-dlp: downloading standalone binary...');
+    const res = await globalThis.fetch(YTDLP_URL, { redirect: 'follow' });
+    if (!res.ok) throw new Error('yt-dlp binary download failed: HTTP ' + res.status);
+    const buf = Buffer.from(await res.arrayBuffer());
+    nodeFs.writeFileSync(YTDLP_PATH, buf, { mode: 0o755 });
+    console.log('yt-dlp: binary ready (' + (buf.length / 1024 / 1024).toFixed(1) + ' MB)');
+    return YTDLP_PATH;
+  })().catch(e => { ytdlpReady = null; throw e; });
+  return ytdlpReady;
+}
+
+function isVideoUrl(url) {
+  if (!url) return false;
+  return /tiktok\.com\/@[^/]+\/video\//i.test(url) ||
+         /vm\.tiktok\.com\//i.test(url) ||
+         /instagram\.com\/(reel|reels|p|tv)\//i.test(url) ||
+         /facebook\.com\/.+\/(videos|reel)\//i.test(url) ||
+         /facebook\.com\/(reel|watch)/i.test(url) ||
+         /fb\.watch\//i.test(url) ||
+         /(x|twitter)\.com\/.+\/status\//i.test(url);
+}
+
+const AUDIO_MIME = { m4a: 'audio/mp4', mp4: 'video/mp4', webm: 'audio/webm', mp3: 'audio/mpeg', ogg: 'audio/ogg', opus: 'audio/ogg', wav: 'audio/wav', mpeg: 'audio/mpeg' };
+
+async function fetchVideoTranscript(url) {
+  if (!GROQ_API_KEY) { console.log('Video transcript: GROQ_API_KEY not set'); return null; }
+  const base = nodePath.join(nodeOs.tmpdir(), 'wbt_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7));
+  let outFile = null;
+  let ytStdout = '';
+  try {
+    const bin = await ensureYtdlp();
+    console.log('yt-dlp: fetching audio for', url);
+    // Audio-only stream as-is (no conversion → no ffmpeg needed). Fallback to smallest full file.
+    await execFileAsync(bin, [
+      '-f', 'ba[filesize<24M]/ba/w[filesize<24M]/w',
+      '-j', '--no-simulate',
+      '--no-playlist', '--no-warnings', '--quiet',
+      '--max-filesize', '24M',
+      '-o', base + '.%(ext)s',
+      url
+    ], { timeout: 90000, maxBuffer: 20 * 1024 * 1024 }).then(r => { ytStdout = r.stdout || ''; });
+
+    // Metadata (caption, title, account, thumbnail) — optional, never fatal
+    let meta = {};
+    try {
+      const line = ytStdout.trim().split('\n').filter(Boolean).pop();
+      if (line) meta = JSON.parse(line);
+    } catch (_) { console.log('yt-dlp: metadata parse failed (continuing with audio only)'); }
+    const caption = String(meta.description || '').trim().slice(0, 1500);
+    const tags = Array.isArray(meta.tags) ? meta.tags.filter(t => t && !caption.includes(t)).slice(0, 15) : [];
+    const info = {
+      caption, tags,
+      title: String(meta.title || '').trim().slice(0, 200) || null,
+      uploader: meta.uploader_id || meta.uploader || meta.channel || null,
+      thumbnail: meta.thumbnail || null
+    };
+
+    const dir = nodeOs.tmpdir();
+    const prefix = nodePath.basename(base);
+    const match = nodeFs.readdirSync(dir).find(f => f.startsWith(prefix) && !f.endsWith('.part'));
+    if (!match) {
+      console.log('yt-dlp: no output file produced');
+      return info.caption.length >= 30 ? Object.assign(info, { transcript: '' }) : null;
+    }
+    outFile = nodePath.join(dir, match);
+    const bytes = nodeFs.readFileSync(outFile);
+    const ext = (match.split('.').pop() || 'mp4').toLowerCase();
+    console.log('yt-dlp: got ' + (bytes.length / 1024).toFixed(0) + ' KB (' + ext + ')');
+    if (bytes.length === 0) { console.log('yt-dlp: empty file'); return null; }
+    if (bytes.length > 25 * 1024 * 1024) { console.log('Audio exceeds Groq 25MB limit'); return null; }
+
+    // Groq Whisper — native fetch/FormData/Blob (node-fetch can't serialize native FormData)
+    const form = new FormData();
+    form.append('file', new Blob([bytes], { type: AUDIO_MIME[ext] || 'application/octet-stream' }), 'audio.' + (AUDIO_MIME[ext] ? ext : 'mp4'));
+    form.append('model', 'whisper-large-v3');
+    form.append('response_format', 'json');
+    const groqRes = await globalThis.fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + GROQ_API_KEY },
+      body: form
+    });
+    let transcript = '';
+    if (!groqRes.ok) {
+      console.log('Groq error:', groqRes.status, (await groqRes.text()).slice(0, 300));
+    } else {
+      const data = await groqRes.json();
+      transcript = (data.text || '').replace(/\s+/g, ' ').trim();
+    }
+    if (transcript.length < 20) {
+      console.log('Groq: no usable speech (' + transcript.length + ' chars)');
+      if (info.caption.length >= 30) { console.log('Using caption only'); return Object.assign(info, { transcript: '' }); }
+      return null;
+    }
+    const words = transcript.split(' ');
+    console.log('Groq Whisper: transcribed ' + words.length + ' words; caption ' + info.caption.length + ' chars');
+    return Object.assign(info, { transcript: words.length > 3000 ? words.slice(0, 3000).join(' ') + '...' : transcript });
+  } catch (e) {
+    console.log('fetchVideoTranscript error:', (e.stderr || e.message || '').toString().slice(0, 300));
+    return null;
+  } finally {
+    if (outFile) { try { nodeFs.unlinkSync(outFile); } catch (_) {} }
+  }
+}
+
+const VIDEO_PLATFORM_NAMES = { tiktok: 'TikTok', instagram: 'Instagram', facebook: 'Facebook', x: 'X' };
+
+function buildVideoAnalysisText(video, platform) {
+  const name = VIDEO_PLATFORM_NAMES[platform] || 'Video';
+  const parts = [];
+  parts.push('[CONTEXT FOR ANALYSIS: This is a ' + name + ' video, not a text post. Below are the creator\'s caption (if any) and an automatic transcript of the audio. ' +
+    'The transcript contains speech only — on-screen text, visuals, editing, and music are NOT included, and speakers are NOT identified. ' +
+    'Videos often include clips, quotes, or impersonations of other people, so a quoted statement may belong to someone the creator opposes, not to the creator. ' +
+    'Judge whose agenda the video advances from its overall framing — the caption, the structure, and how quoted material is presented — rather than from any single line.]');
+  if (video.uploader) parts.push('Account: @' + String(video.uploader).replace(/^@/, ''));
+  if (video.caption) parts.push('Creator caption: ' + video.caption);
+  if (video.tags && video.tags.length) parts.push('Hashtags: ' + video.tags.map(t => '#' + t).join(' '));
+  parts.push(video.transcript ? ('Audio transcript: ' + video.transcript) : 'Audio transcript: (no usable speech detected — analyze from the caption only)');
+  return parts.join('\n\n');
+}
+
 async function fetchFromNews(url) {
   const domain = extractDomain(url);
-  const userAgents = [
+
+  // Helper: extract article text from HTML
+  function extractArticle(html, url) {
+    const $ = cheerio.load(html);
+    const articleSelectors = [
+      'article p', '.article-body p', '.story-body p',
+      '[itemprop="articleBody"] p', '.content-area p',
+      '.article-content p', '.post-content p', '.entry-content p',
+      '.articleBody p', '#article-body p', '.body-copy p'
+    ];
+    let text = '';
+    for (const sel of articleSelectors) {
+      const paragraphs = $(sel).map((i, el) => $(el).text().trim()).get().filter(t => t.length > 50);
+      if (paragraphs.length > 0) { text = paragraphs.slice(0, 15).join(' '); break; }
+    }
+    if (!text || text.length < 100) {
+      text = $('meta[property="og:description"]').attr('content') ||
+             $('meta[name="description"]').attr('content') ||
+             $('meta[property="og:title"]').attr('content') || '';
+    }
+    const title = $('meta[property="og:title"]').attr('content') || $('title').text() || '';
+    const ogImage = $('meta[property="og:image"]').attr('content') || $('meta[name="twitter:image"]').attr('content') || null;
+
+    // Expanded author extraction with validation
+    const authorBlacklist = [
+      'כתב המערכת','כתבת המערכת','צוות המערכת','מערכת','editorial team','staff writer',
+      'staff','editor','admin','administrator','webmaster','reuters','ap','afp','jta',
+      'וואלה','ynet','mako','haaretz','globes','calcalist','israel hayom','kan','walla'
+    ];
+    function isValidAuthor(name) {
+      if (!name) return false;
+      const t = name.trim();
+      if (t.length < 2 || t.length > 60) return false;
+      if (t.split(/\s+/).length > 5) return false; // too many words
+      if (/[|©®@{}<>]/.test(t)) return false; // special chars
+      if (/https?:\/\//.test(t)) return false; // URL
+      if (/^\d+$/.test(t)) return false; // only numbers
+      const tl = t.toLowerCase();
+      if (authorBlacklist.some(b => tl.includes(b.toLowerCase()))) return false;
+      return true;
+    }
+    function firstValid(...candidates) {
+      for (const c of candidates) {
+        const t = (c||'').trim();
+        if (isValidAuthor(t)) return t;
+      }
+      return null;
+    }
+    const author = firstValid(
+      // Standard meta
+      $('meta[name="author"]').attr('content'),
+      $('meta[name="article:author"]').attr('content'),
+      $('meta[property="article:author"]').attr('content'),
+      $('meta[name="twitter:creator"]').attr('content'),
+      // Schema.org
+      $('[itemprop="author"] [itemprop="name"]').first().text(),
+      $('[itemprop="author"]').first().text(),
+      $('[rel="author"]').first().text(),
+      // Common class/id patterns (English + Hebrew)
+      $('.author-name').first().text(),
+      $('.author').first().text(),
+      $('.byline-author').first().text(),
+      $('.byline').first().text(),
+      $('.writer-name').first().text(),
+      $('.writer').first().text(),
+      $('.reporter').first().text(),
+      $('.article-author').first().text(),
+      $('.post-author').first().text(),
+      $('.entry-author').first().text(),
+      // Israeli news specific
+      $('.author-title').first().text(),
+      $('[data-author]').first().attr('data-author'),
+      $('[data-cy="author-name"]').first().text(),
+      $('[data-testid="author-name"]').first().text(),
+      $('[class*="author"]').first().text(),
+      $('[class*="writer"]').first().text(),
+      $('[class*="byline"]').first().text(),
+      $('[class*="reporter"]').first().text()
+    );
+    return { text, title, ogImage, author };
+  }
+
+  // Tier 1: Basic headers (current approach)
+  const basicUserAgents = [
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Googlebot/2.1 (+http://www.google.com/bot.html)',
     'Mozilla/5.0 (compatible; Bingbot/2.0; +http://www.bing.com/bingbot.htm)'
   ];
-  let lastError;
-  for (const ua of userAgents) {
+
+  for (const ua of basicUserAgents) {
     try {
       const response = await fetch(url, {
-        headers: { 'User-Agent': ua, 'Accept': 'text/html,application/xhtml+xml', 'Accept-Language': 'en-US,en;q=0.9,he;q=0.8' },
+        headers: { 'User-Agent': ua, 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9,he;q=0.8' },
         redirect: 'follow'
       });
-      if (!response.ok) { lastError = new Error(`HTTP ${response.status}`); continue; }
+      if (!response.ok) continue;
       const html = await response.text();
-      const $ = cheerio.load(html);
-      // Try to get article body first, fall back to meta tags
-      const articleSelectors = ['article p', '.article-body p', '.story-body p', '[itemprop="articleBody"] p', '.content-area p'];
-      let text = '';
-      for (const sel of articleSelectors) {
-        const paragraphs = $(sel).map((i, el) => $(el).text().trim()).get().filter(t => t.length > 50);
-        if (paragraphs.length > 0) { text = paragraphs.slice(0, 10).join(' '); break; }
-      }
-      // Fall back to meta tags if no article body found
-      if (!text || text.length < 100) {
-        text = $('meta[property="og:description"]').attr('content') ||
-               $('meta[name="description"]').attr('content') ||
-               $('meta[property="og:title"]').attr('content') || '';
-      }
-      const title = $('meta[property="og:title"]').attr('content') || $('title').text() || '';
-      // Get author if available
-      const author = $('meta[name="author"]').attr('content') ||
-                     $('[rel="author"]').first().text() ||
-                     $('[itemprop="author"]').first().text() || null;
-      if (!text || text.length < 50) { lastError = new Error('Could not extract article text'); continue; }
+      const { text, title, ogImage, author } = extractArticle(html, url);
+      if (!text || text.length < 100) continue;
       const fullText = title ? `${title}\n\n${text}` : text;
-
-      // Look for embedded YouTube videos and fetch their transcripts
-      const embeddedIds = extractEmbeddedYoutubeIds(html);
-      let videoNote = '';
-      if (embeddedIds.length > 0) {
-        const transcripts = [];
-        for (const vid of embeddedIds.slice(0, 5)) { // max 5 videos
-          const t = await fetchYoutubeTranscript(vid);
-          if (t) transcripts.push(t);
-        }
-        if (transcripts.length > 0) {
-          const combined = transcripts.join('\n\n');
-          const words = combined.split(' ');
-          const trimmed = words.length > 3000 ? words.slice(0, 3000).join(' ') + '...' : combined;
-          console.log(`News fetch: appended ${transcripts.length} YouTube transcript(s) from ${domain}`);
-          return { text: fullText + '\n\n' + trimmed, author: author ? author.trim() : null, authorHandle: author ? author.trim() : null, source: 'news', domain, hasVideoTranscript: true };
-        } else {
-          // Videos found but no transcripts available
-          videoNote = 'Note: this article contains embedded video(s) whose transcript could not be retrieved. Analysis is based on article text only.';
-        }
-      }
-
-      console.log(`News fetch success from ${domain}, text length: ${fullText.length}`);
-      return { text: fullText, author: author ? author.trim() : null, authorHandle: author ? author.trim() : null, source: 'news', domain, videoNote: videoNote || null };
-    } catch(e) { lastError = e; }
+      console.log(`News fetch (tier 1) success from ${domain}, length: ${fullText.length}`);
+      return await enrichWithYoutube(html, fullText, author, domain, title, ogImage);
+    } catch(e) { console.log(`News fetch tier 1 error (${ua.slice(0,20)}):`, e.message); }
   }
-  throw new Error(`Could not fetch article from ${domain}. ${lastError?.message || ''}. The article may be paywalled or require login.`);
+
+  // Tier 2: Full browser-like headers
+  console.log(`News fetch tier 1 failed for ${domain}, trying full browser headers`);
+  const browserHeaders = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9,he;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1',
+    'sec-ch-ua': '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'Referer': 'https://www.google.com/'
+  };
+
+  try {
+    const response = await fetch(url, { headers: browserHeaders, redirect: 'follow' });
+    if (response.ok) {
+      const html = await response.text();
+      const { text, title, ogImage, author } = extractArticle(html, url);
+      if (text && text.length >= 100) {
+        const fullText = title ? `${title}\n\n${text}` : text;
+        console.log(`News fetch (tier 2) success from ${domain}, length: ${fullText.length}`);
+        return await enrichWithYoutube(html, fullText, author, domain, title, ogImage);
+      }
+    }
+  } catch(e) { console.log(`News fetch tier 2 error for ${domain}:`, e.message); }
+
+  // Tier 3: Archive.org fallback
+  console.log(`News fetch tier 2 failed for ${domain}, trying Archive.org`);
+  try {
+    const archiveUrl = `https://web.archive.org/web/2/${url}`;
+    const response = await fetch(archiveUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36', 'Accept': 'text/html' },
+      redirect: 'follow'
+    });
+    if (response.ok) {
+      const html = await response.text();
+      const { text, title, ogImage, author } = extractArticle(html, url);
+      if (text && text.length >= 100) {
+        const fullText = title ? `${title}\n\n${text}` : text;
+        console.log(`News fetch (tier 3 archive.org) success from ${domain}, length: ${fullText.length}`);
+        return await enrichWithYoutube(html, fullText, author, domain, title, ogImage);
+      }
+    }
+  } catch(e) { console.log(`News fetch tier 3 error for ${domain}:`, e.message); }
+
+  throw new Error(`Could not fetch article from ${domain}. The article may be paywalled, require login, or not yet indexed. You can paste the article text manually below.`);
+}
+
+async function enrichWithYoutube(html, fullText, author, domain, ogTitle, ogImage) {
+  const embeddedIds = extractEmbeddedYoutubeIds(html);
+  let videoNote = '';
+  if (embeddedIds.length > 0) {
+    const transcripts = [];
+    for (const vid of embeddedIds.slice(0, 5)) {
+      const t = await fetchYoutubeTranscript(vid);
+      if (t) transcripts.push(t);
+    }
+    if (transcripts.length > 0) {
+      const combined = transcripts.join('\n\n');
+      const words = combined.split(' ');
+      const trimmed = words.length > 3000 ? words.slice(0, 3000).join(' ') + '...' : combined;
+      console.log(`News fetch: appended ${transcripts.length} YouTube transcript(s) from ${domain}`);
+      return { text: fullText + '\n\n' + trimmed, author: author ? author.trim() : null, authorHandle: author ? author.trim() : null, source: 'news', domain, hasVideoTranscript: true, ogTitle: ogTitle||null, ogImage: ogImage||null };
+    } else {
+      videoNote = 'Note: this article contains embedded video(s) whose transcript could not be retrieved. Analysis is based on article text only.';
+    }
+  }
+  return { text: fullText, author: author ? author.trim() : null, authorHandle: author ? author.trim() : null, source: 'news', domain, videoNote: videoNote || null, ogTitle: ogTitle||null, ogImage: ogImage||null };
 }
 
 // In-memory transcript cache — transcripts don't change once a video is published
@@ -1437,11 +2159,11 @@ After searching, extract the full post text and author information. Return JSON 
 }`;
 
   // First call — force tool use
-  const firstResponse = await fetch('https://api.anthropic.com/v1/messages', {
+  const firstResponse = await claudeFetch(ANTHROPIC_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-5',
+      model: getModel('websearch'),
       max_tokens: 2000,
       temperature: 0,
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
@@ -1484,11 +2206,11 @@ After searching, extract the full post text and author information. Return JSON 
     }
   ];
 
-  const secondResponse = await fetch('https://api.anthropic.com/v1/messages', {
+  const secondResponse = await claudeFetch(ANTHROPIC_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-5',
+      model: getModel('websearch'),
       max_tokens: 1000,
       temperature: 0,
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
@@ -1534,7 +2256,6 @@ function extractPostFromText(textContent, platform) {
 // ─────────────────────────────────────────────
 // CLAUDE SCORING ENGINE
 // ─────────────────────────────────────────────
-const BATCH_SIZE = 10;
 
 // Detect if text contains significant Hebrew or Arabic characters
 function isNonEnglish(text) {
@@ -1562,10 +2283,10 @@ Respond ONLY with valid JSON:
   "political_context": "..."
 }`;
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const response = await claudeFetch(ANTHROPIC_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: 'claude-sonnet-4-5', max_tokens: 800, temperature: 0, messages: [{ role: 'user', content: prompt }] })
+    body: JSON.stringify({ model: getModel('translate'), max_tokens: 1500, temperature: 0, messages: [{ role: 'user', content: prompt }] })
   });
   if (!response.ok) return null;
   const data = await response.json();
@@ -1578,135 +2299,13 @@ Respond ONLY with valid JSON:
   } catch(e) { return null; }
 }
 
-async function scoreWithClaude(postText, entities) {
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
+// ─────────────────────────────────────────────
+// SCORING ENGINE v2 — Jev screens, Claude judges
+//   1. Translate non-English posts (Jev is strongest in English)
+//   2. Jev: 2 yes/no questions per entity, one parallel request → shortlist
+//   3. Claude (deep_score model): judges the shortlist in one structured call
+// ─────────────────────────────────────────────
 
-  let enrichedText = postText;
-  if (isNonEnglish(postText)) {
-    try {
-      const translation = await translatePost(postText);
-      if (translation) {
-        enrichedText = `ORIGINAL TEXT:\n${postText}\n\nENGLISH TRANSLATION:\n${translation.translation}\n\nPOLITICAL CONTEXT:\n${translation.political_context}`;
-        totalInputTokens += translation._tokens?.input || 0;
-        totalOutputTokens += translation._tokens?.output || 0;
-        console.log('Post translated for scoring. Political context:', translation.political_context.slice(0, 150));
-      }
-    } catch(e) {
-      console.warn('Translation failed, using original text:', e.message);
-    }
-  }
-
-  const batches = [];
-  for (let i = 0; i < entities.length; i += BATCH_SIZE) batches.push(entities.slice(i, i + BATCH_SIZE));
-  const batchResults = await Promise.all(batches.map(batch => scoreBatch(enrichedText, batch)));
-  const allMatches = [];
-  let text_ai_score = 5, text_ai_reason = '';
-  for (const result of batchResults) {
-    if (result.text_ai_score) text_ai_score = result.text_ai_score;
-    if (result.text_ai_reason) text_ai_reason = result.text_ai_reason;
-    totalInputTokens += result._tokens?.input || 0;
-    totalOutputTokens += result._tokens?.output || 0;
-    for (const match of (result.matches || [])) {
-      if (!allMatches.find(m => m.id === match.id)) allMatches.push(match);
-    }
-  }
-  allMatches.sort((a, b) => b.pct - a.pct);
-
-  const candidates = allMatches.filter(m => m.pct >= 60);
-  let finalMatches = allMatches;
-  if (candidates.length > 1) {
-    try {
-      const coherent = await coherenceCheck(enrichedText, candidates, entities);
-      totalInputTokens += coherent._tokens?.input || 0;
-      totalOutputTokens += coherent._tokens?.output || 0;
-      const coherentIds = new Set(coherent.map ? coherent.map(m => m.id) : []);
-      finalMatches = allMatches.map(m => {
-        if (!coherentIds.has(m.id) && m.pct >= 60) {
-          return Object.assign({}, m, { pct: Math.min(m.pct, 50), why: '', missing: '', alignment: '' });
-        }
-        const refined = Array.isArray(coherent) ? coherent.find(c => c.id === m.id) : null;
-        return refined ? Object.assign({}, m, refined) : m;
-      });
-    } catch(e) {
-      console.warn('Coherence check failed, using raw scores:', e.message);
-    }
-  }
-
-  console.log(`[TOKENS] scan total: in=${totalInputTokens} out=${totalOutputTokens}`);
-  return { text_ai_score, text_ai_reason, matches: finalMatches, _tokens: { input: totalInputTokens, output: totalOutputTokens } };
-}
-
-async function coherenceCheck(postText, candidates, allEntities) {
-  const candidateSummary = candidates.map(m => {
-    const e = allEntities.find(x => x.id === m.id);
-    return `ID:${m.id} NAME:${m.name} SCORE:${m.pct}% ALIGNMENT:${m.alignment||'?'}`;
-  }).join('\n');
-
-  const prompt = `You are a senior geopolitical analyst. A scoring engine has identified the following entities as potentially aligned with a social media post. Your job is to apply a coherence filter — a single post can only realistically serve one coherent political direction at a time.
-
-SOCIAL MEDIA POST TEXT:
-"${postText}"
-
-CANDIDATE MATCHES (already scored):
-${candidateSummary}
-
-ENTITY RELATIONSHIPS TO CONSIDER:
-- Iran, Hamas, Hezbollah, PIJ, Houthis, Muslim Brotherhood form the "Axis of Resistance" — they share interests
-- Israeli Opposition, Protest Movement, Hostage Families, Lieberman, Israeli Left are anti-Netanyahu Israeli domestic voices — they share interests
-- Netanyahu government, Ben Gvir/Smotrich, AIPAC, Evangelical Zionists, US pro-Israel bloc share interests BUT have distinct sub-interests
-- Palestinian Authority / Fatah and Hamas are RIVALS
-- Israel and Iran are RIVALS
-- US pro-Israel bloc (Trump, Rubio, Vance, AIPAC) and US Progressive Caucus (AOC) are RIVALS on this issue
-- Russia and China benefit opportunistically but are not part of any primary bloc
-- Human rights orgs (Amnesty, HRW, B'Tselem, ICC/ICJ) operate independently but often align with criticism of Israeli military conduct
-- AOC/Progressive Caucus may align with human rights orgs and Israeli left — but NOT with Iran or Hamas
-
-INTRA-COALITION DISTINCTION — CRITICAL:
-Entities in the same broad coalition can have conflicting sub-interests. Treat them as distinct:
-- A post criticizing Netanyahu from the RIGHT (settlers demanding harder enforcement, sovereignty language, West Bank infrastructure) aligns with Ben Gvir/Smotrich and the Settler Movement — but NOT with Netanyahu himself, who is being criticized
-- A post criticizing Netanyahu from the LEFT (hostage deal, judicial reform, democratic norms) aligns with Israeli Opposition/Protest Movement — but NOT with Iran or Hamas even if they also oppose Netanyahu
-- Ben Gvir/Smotrich and Netanyahu share a coalition but have genuine tension — settler posts that demand action Netanyahu hasn't taken align with the former, not the latter
-
-TASK:
-1. Identify the single most coherent political direction this post serves
-2. Keep entities that genuinely fit that direction (including legitimate secondary/collateral beneficiaries)
-3. REMOVE entities that belong to rival blocs or whose specific interests don't fit this post's framing
-4. You may adjust the "alignment" field (primary/secondary) based on your coherence assessment
-5. Maximum 3 primary, 2 secondary in your final output
-
-CRITICAL: A post criticizing Netanyahu may align with Israeli opposition AND human rights orgs AND AOC — that is coherent. But it should NOT align with Iran or Hamas. A settler enforcement post aligns with Ben Gvir/Settler Movement — but NOT with Netanyahu if he is being pressured.
-
-Respond ONLY with valid JSON — the filtered list of matches to KEEP:
-{
-  "matches": [
-    {
-      "id": 51,
-      "name": "Israeli Opposition Bloc",
-      "pct": 91,
-      "alignment": "primary",
-      "why": "...",
-      "missing": "..."
-    }
-  ]
-}`;
-
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: 'claude-sonnet-4-5', max_tokens: 1500, temperature: 0, messages: [{ role: 'user', content: prompt }] })
-  });
-  if (!response.ok) { const err = await response.json().catch(() => ({})); throw new Error('Coherence check API error: ' + (err.error?.message || response.status)); }
-  const data = await response.json();
-  const raw = data.content.map(c => c.text || '').join('').trim();
-  const clean = raw.replace(/```json|```/g, '').trim();
-  const result = JSON.parse(clean);
-  const matches = result.matches || [];
-  matches._tokens = { input: data.usage?.input_tokens || 0, output: data.usage?.output_tokens || 0 };
-  return matches;
-}
-
-// Pre-process entities into compact format at call time (saves ~15-20% tokens)
 function formatEntityCompact(e) {
   return `[${e.id}] ${e.name} (${e.type})\n` +
     `N: ${(e.narrative||'').slice(0,250)}\n` +
@@ -1715,131 +2314,327 @@ function formatEntityCompact(e) {
     (e.comments ? `\nC: ${(e.comments||'').slice(0,150)}` : '');
 }
 
-async function scoreBatch(postText, entities) {
-  const entitySummaries = entities.map(formatEntityCompact).join('\n---\n');
-
-  const prompt = `You are a senior analyst specializing in geopolitical influence operations, information warfare, and social media manipulation. Your task is to determine whose agenda a social media post serves, and what context it leaves out.
-
-LANGUAGE NOTE:
-The post may be written in English, Hebrew, or Arabic. Score based on semantic meaning and political intent regardless of the language. Do not penalize non-English posts. Key political vocabulary to recognize:
-- Hebrew: ביביזם (Bibiism/blind Netanyahu loyalty), פלישה (invasion/encroachment), ריבונות (sovereignty), יהודה ושומרון (Judea and Samaria/West Bank), אכיפה (enforcement), מאחז (outpost), עסקת חטופים (hostage deal), מחאה (protest)
-- Arabic: مقاومة (resistance), شهيد (martyr), الاحتلال (the occupation), النضال (the struggle), محور المقاومة (Axis of Resistance), التطبيع (normalization), الاستيطان (settlement)
-
-CORE PHILOSOPHY:
-The primary concern is not whether a post contains outright lies, but whether it tells only half the story to serve a specific agenda. A post can be factually accurate and still be pure propaganda if it selectively presents only the facts that serve one side. Identify: (1) whose hidden interest this post serves directly, (2) who indirectly benefits from the post being spread, and (3) what relevant context is conspicuously absent.
-
-SOCIAL MEDIA POST TEXT:
-"${postText}"
-
-ENTITY DATABASE (score ALL of these — do not skip any):
-Field key: N=narrative (public stance), I=interest (hidden strategic interest), M=modus operandi (known tactics), C=comments
-${entitySummaries}
-
-SCORING INSTRUCTIONS:
-For EACH entity above, assess three dimensions:
-
-1. interest_score (0-100) — MOST IMPORTANT (weight: 55%)
-   "Would spreading this post advance this entity's HIDDEN strategic interest?"
-   Consider TWO angles — apply whichever is stronger, or combine if both are present:
-   a) CONTENT: Does the post's message, framing, or narrative directly serve this entity's interests?
-   b) CONTEXT: Does the post attack, undermine, or discredit someone this entity considers a rival or opponent?
-      ONLY apply context scoring if ALL three conditions are met:
-      - A specific named or unmistakably identifiable target is being attacked
-      - That attack is CENTRAL to the post (not incidental or passing)
-      - The rival relationship between that target and this entity is documented in the entity list above
-      If context scoring applies, weight it according to how explicit and central the attack is:
-      - Very direct, central attack on a named rival → strong context signal, weight heavily
-      - Implied or between-the-lines criticism → weaker signal, weight moderately
-      If context is the primary driver of the score, explain this clearly in the "why" field.
-
-2. mo_score (0-100) — IMPORTANT (weight: 35%)
-   "Does the construction of this post match this entity's known manipulation playbook?"
-
-3. narrative_score (0-100) — WEAK SIGNAL (weight: 10%)
-   "Does the post's surface content echo this entity's official public statements?"
-
-Compute: combined_score = (interest_score * 0.55) + (mo_score * 0.35) + (narrative_score * 0.10)
-Round to nearest integer.
-
-IMPORTANT: Return ALL entities where combined_score >= 60.
-The frontend will apply the 85% threshold for display.
-
-PRIMARY vs SECONDARY ALIGNMENT:
-After scoring, classify each match (combined_score >= 60) as either:
-- "primary": This entity is a DIRECT beneficiary — the post appears to have been written with this entity's agenda in mind, consciously or not.
-- "secondary": This entity is an INDIRECT or COLLATERAL beneficiary — the post was not necessarily written for them, but its spread still serves their interests as a side effect.
-
-CRITICAL RULE — CRITICISM IS NOT ALIGNMENT:
-If a post ATTACKS, CRITICIZES, or DELEGITIMIZES an entity, that entity scores LOW on primary alignment — being criticized does not serve your interest. A post mocking Netanyahu does NOT align with Netanyahu. A post exposing Hamas atrocities does NOT align with Hamas. Only score an entity high if spreading the post HELPS them.
-
-CRITICAL RULE — COMPLETE THE BENEFICIARY CHAIN:
-When a post attacks Entity A, always ask: who benefits from Entity A being weakened or discredited? If Entity A's rival (Entity B) is documented in the entity list, Entity B scores HIGH — even if Entity B is never mentioned in the post. This is the most commonly missed signal.
-Examples:
-- Post attacks Bennett, Lapid, Golan → Netanyahu scores high (his rivals are being delegitimized)
-- Post attacks Netanyahu → Israeli opposition scores high
-- Post attacks PA/Abbas → Hamas scores high
-- Post attacks Hamas → PA/Abbas and Israel score high
-Apply this chain for EVERY named target in the post. Never stop at "target scores low" — always follow through to "therefore rival scores high."
-
-CRITICAL RULE — PREFERENCE LISTS AND RANKINGS:
-When a post ranks or compares entities ("I prefer X over Y", "X is 1000 times better than Y"), the entity being elevated scores HIGH, the entity being dismissed scores LOW. A post saying "Netanyahu 1 over 1,000,000,000 Bennett/Lapid/Golan" strongly serves Netanyahu's interest and attacks his rivals — do not be confused by the list format. Score the beneficiary of the glorification, not just the targets of criticism.
-
-CRITICAL RULE — SARCASM AND IRONY DETECTION:
-Assume literal intent UNLESS the post contains explicit irony markers:
-- Quotation marks around praise that reads as mockery
-- A punchline or final line that contradicts the surface meaning
-- Exaggerated praise that is internally inconsistent ("the greatest leader in all of history" style)
-- Hebrew irony markers: "כן בטח", "בטח שכן", "ברור", used sarcastically
-If none of these are present, score the post at face value. Do NOT second-guess straightforward political preference posts. The risk of misidentifying genuine support as sarcasm is greater than missing actual sarcasm.
-
-CRITICAL RULE — INTRA-COALITION CRITICISM:
-Entities in the same political coalition can still have distinct and sometimes conflicting interests. A post criticizing Netanyahu from the RIGHT (e.g. settlers or Ben Gvir demanding harder enforcement) does NOT align with Netanyahu — it aligns with the settler/nationalist bloc specifically. A post criticizing Netanyahu from the LEFT aligns with the Israeli opposition, not with Iran or Hamas even if they also oppose Netanyahu. Score each entity's specific interest independently, not by coalition membership alone.
-
-Maximum 3 primary matches, maximum 2 secondary matches. If a match qualifies for both, assign it to primary only.
-The "alignment" field is MANDATORY on every match — always set it to either "primary" or "secondary", never omit it or leave it blank.
-
-For each entity with combined_score >= 60, provide:
-- "alignment": "primary" or "secondary"
-- "why": 2-3 sentences — for primary: which hidden interest is directly served and which MO tactics are present; for secondary: how the post's spread indirectly benefits this entity
-- "missing": 2-3 sentences on what relevant context this post conspicuously omits
-
-For entities with combined_score < 60, still include them with scores but "why", "missing", and "alignment" can be empty strings.
-
-Also assess (only needed once — include in first batch response):
-- text_ai_score (1-10): probability the text was AI-generated
-- text_ai_reason: one sentence of evidence
-
-Respond ONLY with valid JSON, no preamble, no markdown:
-{
-  "text_ai_score": 5,
-  "text_ai_reason": "...",
-  "matches": [
-    {
-      "id": 2,
-      "name": "Hamas",
-      "narrative": 92,
-      "interest": 95,
-      "mo": 88,
-      "pct": 91,
-      "alignment": "primary",
-      "why": "...",
-      "missing": "..."
+// ── Jev (TypeSafe System One) client ──
+async function callJev(state, questions) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 25000);
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await fetch(TYPESAFE_URL, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + TYPESAFE_API_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state, model: JEV_MODEL, questions }),
+        signal: ctrl.signal
+      });
+      if ((res.status === 429 || res.status === 529) && attempt === 0) {
+        await new Promise(r => setTimeout(r, 2000));
+        continue;
+      }
+      if (!res.ok) {
+        const t = await res.text().catch(() => '');
+        throw new Error('Jev HTTP ' + res.status + ': ' + t.slice(0, 200));
+      }
+      return await res.json();
     }
-  ]
-}`;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+// Splits large question sets across parallel requests (context budget) and merges answers
+async function callJevChunked(state, questions, perRequest) {
+  const keys = Object.keys(questions);
+  const chunks = [];
+  for (let i = 0; i < keys.length; i += perRequest) {
+    const q = {};
+    keys.slice(i, i + perRequest).forEach(k => { q[k] = questions[k]; });
+    chunks.push(q);
+  }
+  const results = await Promise.all(chunks.map(q => callJev(state, q)));
+  const answers = {};
+  let tokens = 0, model = JEV_MODEL;
+  results.forEach(r => {
+    Object.assign(answers, (r && r.answers) || {});
+    tokens += (r && r.usage && r.usage.input_tokens) || 0;
+    if (r && r.model) model = r.model;
+  });
+  return { answers, tokens, model };
+}
+
+// ── Stage 2: screen every entity ──
+async function jevTriage(englishText, politicalContext, entities) {
+  const state = { post: String(englishText).slice(0, 12000) };
+  if (politicalContext) state.political_context = String(politicalContext).slice(0, 2000);
+
+  const questions = {};
+  entities.forEach((e, i) => {
+    const entity = { name: e.name, type: e.type || '', strategic_interest: String(e.interest || '').slice(0, 300) };
+    questions['s' + i] = {
+      type: 'noul',
+      instructions: {
+        entity,
+        question: 'Would spreading `post` advance the agenda or strategic interests of `entity` — for example by promoting its narrative, praising it or its allies, or weakening its opponents?'
+      },
+      criteria: {
+        true: '`post` plausibly helps `entity`, directly or indirectly',
+        false: '`post` is unrelated to `entity`, or works against it'
+      }
+    };
+    // Rival attacks are an indirect benefit — asked separately because Jev is weaker on indirect questions
+    questions['r' + i] = {
+      type: 'noul',
+      instructions: {
+        entity,
+        question: 'Does `post` attack, criticize, or discredit an opponent or rival of `entity`?'
+      },
+      criteria: {
+        true: '`post` targets a rival or opponent of `entity`',
+        false: '`post` does not target any rival of `entity`'
+      }
+    };
+  });
+
+  const { answers, tokens, model } = await callJevChunked(state, questions, 80);
+
+  const scored = entities.map((e, i) => {
+    const s = answers['s' + i] && answers['s' + i].noul;
+    const r = answers['r' + i] && answers['r' + i].noul;
+    const sv = typeof s === 'number' ? s : 0;
+    const rv = typeof r === 'number' ? r : 0;
+    return { entity: e, serve: sv, rival: rv, score: Math.max(sv, rv) };
+  }).sort((a, b) => b.score - a.score);
+
+  // Recall first: everything above threshold (capped), and never fewer than the minimum
+  let shortlist = scored.filter(x => x.score >= JEV_THRESHOLD).slice(0, JEV_MAX_SHORTLIST);
+  if (shortlist.length < JEV_MIN_SHORTLIST) shortlist = scored.slice(0, Math.min(JEV_MIN_SHORTLIST, scored.length));
+
+  return { shortlist: shortlist.map(x => x.entity), scored, tokens, model, questions: Object.keys(questions).length };
+}
+
+// ── Stage 3: Claude judges the shortlist ──
+function buildDeepPrompt(postText, entitySummaries) {
+  return `You are a senior analyst specializing in geopolitical influence operations, information warfare, and social media manipulation, focused on the Israeli-Palestinian conflict and Israeli domestic politics.
+
+CORE QUESTION: Whose agenda does this post serve? Not whether it is true — who benefits from its spread.
+
+POST:
+${postText}
+
+CANDIDATE ENTITIES (pre-selected by a fast screening model — some may be false positives; score each on its merits and give low scores freely):
+${entitySummaries}
+Field key: N = public narrative, I = strategic interest, M = modus operandi, C = analyst comments.
+
+For EACH candidate entity, score three dimensions from 0 to 100:
+- interest: Would spreading this post advance the entity's strategic interest? Consider content (the message itself serves the entity) and context (the post attacks, discredits, or weakens the entity's rivals).
+- mo: Does the post's construction match the entity's known tactics and messaging style?
+- narrative: Does the post echo the entity's public narrative and talking points?
+
+Then set alignment:
+- "primary": the entity is a direct, main beneficiary.
+- "secondary": the entity benefits indirectly.
+- "none": no meaningful benefit.
+At most 3 primary and 2 secondary.
+
+RULES:
+- Criticism is not alignment: a post attacking an entity does not serve that entity.
+- Complete the beneficiary chain: when a post attacks or discredits one side, its rivals and opponents benefit.
+- Rankings and preference lists: the elevated entity benefits; the dismissed one does not.
+- ADVERSARIAL FRAMING: If the post portrays an entity as a threat, aggressor, or enemy, that entity cannot be a primary match on interest alone. Score it high only if the post (a) amplifies the entity's power or fear factor in a way that serves its deterrence, or (b) explicitly advocates a policy whose main beneficiary is that entity. A recommendation that incidentally benefits an adversary, while the post's framing opposes it, is at most a secondary match.
+- Quotes and clips: a statement quoted, shown, or debunked in the post may belong to someone the author opposes. Judge the author's overall framing, not isolated lines.
+- The post may be in Hebrew or Arabic. An English translation and an automatic political-context note may be provided — use them as aids, but judge the original meaning.
+
+For every entity with alignment "primary" or "secondary", write in English only:
+- why: 2-3 sentences on which interest is served and how.
+- missing: 2-3 sentences on relevant context the post omits.
+For alignment "none", leave why and missing empty.
+
+Also rate text_ai_score: 1-10 likelihood the text was AI-generated, with a one-sentence English text_ai_reason.
+
+Record your analysis with the record_alignment tool, with one entry per candidate entity.`;
+}
+
+const ALIGNMENT_TOOL = {
+  name: 'record_alignment',
+  description: 'Record the alignment analysis for every candidate entity.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      text_ai_score: { type: 'integer', description: '1-10: likelihood the post text is AI-generated' },
+      text_ai_reason: { type: 'string', description: 'One English sentence' },
+      matches: {
+        type: 'array',
+        description: 'One entry per candidate entity',
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: ['integer', 'string'], description: 'Entity id exactly as shown in brackets' },
+            narrative: { type: 'integer', description: '0-100' },
+            interest: { type: 'integer', description: '0-100' },
+            mo: { type: 'integer', description: '0-100' },
+            alignment: { type: 'string', enum: ['primary', 'secondary', 'none'] },
+            why: { type: 'string' },
+            missing: { type: 'string' }
+          },
+          required: ['id', 'narrative', 'interest', 'mo', 'alignment', 'why', 'missing']
+        }
+      }
+    },
+    required: ['text_ai_score', 'text_ai_reason', 'matches']
+  }
+};
+
+async function deepScore(postForJudge, entities) {
+  const entitySummaries = entities.map(formatEntityCompact).join('\n---\n');
+  const dbPrompt = getPrompt('deep_score');
+  const prompt = dbPrompt
+    ? interpolatePrompt(dbPrompt, { postText: postForJudge, entitySummaries })
+    : buildDeepPrompt(postForJudge, entitySummaries);
+  const maxTokens = Math.min(16000, 1500 + entities.length * 350);
+
+  const response = await claudeFetch(ANTHROPIC_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: 'claude-sonnet-4-5', max_tokens: 2000, temperature: 0, messages: [{ role: 'user', content: prompt }] })
+    body: JSON.stringify({
+      model: getModel('deep_score'),
+      max_tokens: maxTokens,
+      temperature: 0,
+      tools: [ALIGNMENT_TOOL],
+      tool_choice: { type: 'tool', name: 'record_alignment' },
+      messages: [{ role: 'user', content: prompt }]
+    })
   });
-  if (!response.ok) { const err = await response.json().catch(() => ({})); throw new Error('Claude API error: ' + (err.error?.message || response.status)); }
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error('Claude API error: ' + ((err.error && err.error.message) || response.status));
+  }
   const data = await response.json();
-  const raw = data.content.map(c => c.text || '').join('').trim();
-  const clean = raw.replace(/```json|```/g, '').trim();
-  const result = JSON.parse(clean);
-  result._tokens = { input: data.usage?.input_tokens || 0, output: data.usage?.output_tokens || 0 };
-  return result;
+  if (data.stop_reason === 'max_tokens') console.warn('Judge hit max_tokens (' + maxTokens + ') — result may be incomplete');
+  const block = (data.content || []).find(c => c.type === 'tool_use' && c.name === 'record_alignment');
+  if (!block || !block.input) throw new Error('Judge returned no structured result (stop_reason: ' + data.stop_reason + ')');
+  return {
+    result: block.input,
+    tokens: { input: (data.usage && data.usage.input_tokens) || 0, output: (data.usage && data.usage.output_tokens) || 0 }
+  };
+}
+
+// ── Orchestrator — same name and response format as v1 ──
+async function scoreWithClaude(postText, entities) {
+  const t0 = Date.now();
+  let inTok = 0, outTok = 0;
+
+  // 1. English version for Jev; original + translation for the judge
+  let englishText = postText, politicalContext = '', postForJudge = postText;
+  if (isNonEnglish(postText)) {
+    try {
+      const tr = await translatePost(postText);
+      if (tr && tr.translation) {
+        englishText = tr.translation;
+        politicalContext = tr.political_context || '';
+        postForJudge = `ORIGINAL TEXT:\n${postText}\n\nENGLISH TRANSLATION:\n${tr.translation}` +
+          (politicalContext ? `\n\nPOLITICAL CONTEXT (automatic — verify against the original):\n${politicalContext}` : '');
+        inTok += (tr._tokens && tr._tokens.input) || 0;
+        outTok += (tr._tokens && tr._tokens.output) || 0;
+      }
+    } catch (e) {
+      console.warn('Translation failed, using original text:', e.message);
+    }
+  }
+
+  // 2. Jev screening (falls back to all entities)
+  let shortlist = entities;
+  let triage = { used: false, screened: entities.length };
+  if (TYPESAFE_API_KEY && entities.length > JEV_MIN_SHORTLIST) {
+    try {
+      const j = await jevTriage(englishText, politicalContext, entities);
+      shortlist = j.shortlist;
+      triage = {
+        used: true, model: j.model, questions: j.questions, tokens: j.tokens,
+        screened: entities.length,
+        shortlisted: shortlist.map(e => e.name),
+        top: j.scored.slice(0, 8).map(x => ({ name: x.entity.name, score: Math.round(x.score * 100) / 100 }))
+      };
+      console.log(`[JEV] ${entities.length} entities → ${shortlist.length} shortlisted (≥${JEV_THRESHOLD}): ${shortlist.map(e => e.name).join(', ')} | ${j.tokens} tokens`);
+    } catch (e) {
+      console.warn('[JEV] screening failed — sending all entities to the judge:', e.message);
+      triage = { used: false, screened: entities.length, error: e.message };
+    }
+  }
+
+  // 3. Claude judges the shortlist
+  const judged = await deepScore(postForJudge, shortlist);
+  inTok += judged.tokens.input;
+  outTok += judged.tokens.output;
+
+  const byId = {};
+  shortlist.forEach(e => { byId[String(e.id)] = e; });
+  const clamp = v => Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
+  const seen = new Set();
+  const matches = [];
+  (judged.result.matches || []).forEach(m => {
+    const e = byId[String(m.id)];
+    if (!e || seen.has(String(e.id))) return;
+    seen.add(String(e.id));
+    const narrative = clamp(m.narrative), interest = clamp(m.interest), mo = clamp(m.mo);
+    const alignment = (m.alignment === 'primary' || m.alignment === 'secondary') ? m.alignment : '';
+    matches.push({
+      id: e.id, name: e.name, narrative, interest, mo,
+      pct: Math.round(interest * 0.55 + mo * 0.35 + narrative * 0.10),  // computed in code, not by the model
+      alignment,
+      why: alignment ? (m.why || '') : '',
+      missing: alignment ? (m.missing || '') : ''
+    });
+  });
+  matches.sort((a, b) => b.pct - a.pct);
+
+  const tas = parseInt(judged.result.text_ai_score, 10);
+  console.log(`[TOKENS] scan: claude in=${inTok} out=${outTok} | jev in=${triage.tokens || 0} | judged ${shortlist.length}/${entities.length} entities | ${Date.now() - t0}ms`);
+  return {
+    text_ai_score: (tas >= 1 && tas <= 10) ? tas : 5,
+    text_ai_reason: judged.result.text_ai_reason || '',
+    matches,
+    triage,
+    _tokens: { input: inTok, output: outTok }
+  };
+}
+
+// ── Cluster detection: Jev pre-screens post pairs ──
+async function jevGatePairs(pairs) {
+  if (!TYPESAFE_API_KEY || pairs.length < 2) return { pairs, stats: { used: false, total: pairs.length } };
+  try {
+    const clip = (s, n) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, n);
+    const side = p => ({
+      date: p.ts ? new Date(p.ts).toISOString().slice(0, 10) : 'unknown',
+      aligned_with: (p.topMatches || []).slice(0, 2).join(', ') || 'none',
+      text: clip(p.postText, 400)
+    });
+    const questions = {};
+    pairs.forEach(([a, b], i) => {
+      questions['c' + i] = {
+        type: 'noul',
+        instructions: {
+          post_a: side(a),
+          post_b: side(b),
+          question: 'Do `post_a` and `post_b` push the same specific narrative, claim, or framing goal — not merely the same topic or news event?'
+        },
+        criteria: {
+          true: 'Same specific framing goal or talking point, or one post responds to or escalates the other',
+          false: 'Unrelated, only topical overlap, or opposing camps on the same event'
+        }
+      };
+    });
+    const state = 'Candidate pairs of social media posts from an investigation into coordinated political narratives (Israeli politics and the Israeli-Palestinian conflict).';
+    const { answers, tokens } = await callJevChunked(state, questions, 100);
+    // Missing answer → keep the pair (recall first)
+    const kept = pairs.filter((_, i) => {
+      const v = answers['c' + i] && answers['c' + i].noul;
+      return typeof v !== 'number' || v >= JEV_PAIR_THRESHOLD;
+    });
+    console.log(`[JEV] pair gate: ${pairs.length} pairs → ${kept.length} sent to Claude | ${tokens} tokens`);
+    return { pairs: kept, stats: { used: true, total: pairs.length, kept: kept.length, tokens } };
+  } catch (e) {
+    console.warn('[JEV] pair gate failed — checking all pairs with Claude:', e.message);
+    return { pairs, stats: { used: false, total: pairs.length, error: e.message } };
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -1867,6 +2662,14 @@ const NEWS_DOMAINS = new Set([
   'i24news.tv','jewishinsider.com','tabletmag.com','mosaic.org','commentary.org',
   'debka.com','debkafile.com','memri.org','jihadwatch.org',
   'axios.com','vox.com','vice.com','buzzfeednews.com','huffpost.com',
+  'nypost.com','dailybeast.com','thedailybeast.com','breitbart.com','theintercept.com',
+  'spectator.co.uk','spectator.us','nationalreview.com','weeklystandard.com',
+  'thenation.com','motherjones.com','slate.com','salon.com','theatlantic.com',
+  // Israeli — additional
+  'c14.co.il','14tv.co.il','mida.org.il','makor-rishon.co.il','makorrishon.co.il',
+  'srugim.co.il','kipa.co.il','hidabroot.com','arutz7.co.il','behadrei.co.il',
+  'kikar.co.il','bhol.co.il','ladaat.co.il','col.org.il','chadrei-charedim.com',
+  'mynet.co.il','one.co.il','nrg.co.il','sport1.co.il','keshet12.co.il',
 ]);
 
 function isNewsDomain(url) {
@@ -1961,11 +2764,11 @@ Respond ONLY with valid JSON:
   "agenda": "..."
 }`;
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const response = await claudeFetch(ANTHROPIC_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-5', max_tokens: 600, temperature: 0,
+      model: getModel('publication'), max_tokens: 600, temperature: 0,
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
       messages: [{ role: 'user', content: prompt }]
     })
@@ -1992,6 +2795,16 @@ Provide:
 2. bio: Factual 2-paragraph summary — background, what they are known for, political or ideological stance, notable work or affiliations. If anonymous or low-profile, state that clearly.
 3. location: Country or city (if publicly known). "Unknown" if not established.
 4. handles: Array of known social media handles, websites, or other online presence. Format: "X: @handle", "Website: domain.com". Only verified or highly likely matches.
+5. botProbability: Integer 0-100 estimating likelihood this is a bot or inauthentic account. Base this on:
+   - Bio authenticity: verifiable specifics (job, institution, city) vs generic/ideological template
+   - Activity inflection: old account with sudden recent spike in posting volume is suspicious
+   - Follower/following ratio: mass-following with few followers back is a signal
+   - Narrative focus: exclusively one geopolitical topic with no personal content
+   - Engagement: lots of retweets but little original content or genuine dialogue
+   - Account name: suspiciously ideological names suggest manufactured identity
+   - Journalists/authors with verified publication history score very low (0-15%)
+   - Use the string "Unknown" if there is genuinely insufficient data to assess
+6. botReasoning: 1-2 sentences in English explaining the score. Mention the 2-3 strongest signals — both those pointing toward authentic AND any that raised suspicion. Format: "[score]% — [strongest human signals]; [suspicious signals or 'no significant bot signals detected']." Example: "20% — real identity with verifiable LinkedIn and career history, account active since 2020 with consistent political voice; no significant bot signals detected."
 
 Be factual and neutral. Do not speculate beyond what is publicly known.
 
@@ -2000,14 +2813,16 @@ Respond ONLY with valid JSON:
   "name": "...",
   "bio": "...",
   "location": "...",
-  "handles": ["X: @handle"]
+  "handles": ["X: @handle"],
+  "botProbability": 25,
+  "botReasoning": "Established journalist with verified byline at major publication since 2015; no signs of inauthentic behavior."
 }`;
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const response = await claudeFetch(ANTHROPIC_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-5', max_tokens: 800, temperature: 0,
+      model: getModel('actor'), max_tokens: 1000, temperature: 0,
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
       messages: [{ role: 'user', content: prompt }]
     })
@@ -2016,9 +2831,9 @@ Respond ONLY with valid JSON:
   const data = await response.json();
   const raw = data.content.filter(c => c.type === 'text').map(c => c.text || '').join('').trim();
   const result = extractJSON(raw);
-  // Strip citation markup that web_search tool injects (e.g. <cite index="1-2">text</cite>)
   if (result.bio) result.bio = result.bio.replace(/<cite[^>]*>(.*?)<\/cite>/gs, '$1').replace(/\[\d+\]/g, '').trim();
   if (result.name) result.name = result.name.replace(/<cite[^>]*>(.*?)<\/cite>/gs, '$1').trim();
+  if (result.botReasoning) result.botReasoning = result.botReasoning.replace(/<cite[^>]*>(.*?)<\/cite>/gs, '$1').replace(/\[\d+\]/g, '').trim();
   result._tokens = { input: data.usage?.input_tokens || 0, output: data.usage?.output_tokens || 0 };
   return result;
 }
@@ -2029,7 +2844,7 @@ Respond ONLY with valid JSON:
 function extractJSON(text) {
   // Strip markdown fences
   let s = text.replace(/```json|```/g, '').trim();
-  // Handle arrays starting with [
+  // Extract JSON object/array boundaries
   const arrStart = s.indexOf('[');
   const objStart = s.indexOf('{');
   if (arrStart !== -1 && (objStart === -1 || arrStart < objStart)) {
@@ -2039,8 +2854,82 @@ function extractJSON(text) {
     const end = s.lastIndexOf('}');
     if (end !== -1) s = s.slice(objStart, end + 1);
   }
-  return JSON.parse(s);
+
+  // Attempt 1: parse as-is
+  try { return JSON.parse(s); } catch(e) {}
+
+  // Attempt 2: robust string-aware repair
+  // Walk the JSON character by character, tracking string context,
+  // and fix unescaped quotes, newlines, and other control chars inside strings
+  try {
+    let out = '';
+    let inStr = false;
+    let esc = false;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (esc) { out += c; esc = false; continue; }
+      if (c === '\\') { out += c; esc = true; continue; }
+      if (!inStr) {
+        if (c === '"') { inStr = true; out += c; continue; }
+        out += c; continue;
+      }
+      // Inside a string
+      if (c === '"') {
+        // Peek ahead to decide: closing quote or unescaped internal quote?
+        let j = i + 1;
+        while (j < s.length && (s[j] === ' ' || s[j] === '\t')) j++;
+        const nxt = s[j];
+        if (nxt === ':' || nxt === ',' || nxt === '}' || nxt === ']' || j >= s.length) {
+          inStr = false; out += c;
+        } else {
+          out += '\\"'; // escape internal quote
+        }
+        continue;
+      }
+      if (c === '\n') { out += '\\n'; continue; }
+      if (c === '\r') { out += '\\r'; continue; }
+      if (c === '\t') { out += '\\t'; continue; }
+      // Other control chars — strip
+      if (c.charCodeAt(0) < 0x20) continue;
+      out += c;
+    }
+    return JSON.parse(out);
+  } catch(e) {}
+
+  // Attempt 3: strip all problematic chars from string values using regex
+  try {
+    const cleaned = s.replace(/"((?:[^"\\\n]|\\.)*)"/g, function(match, inner) {
+      // Re-escape newlines and strip other control chars inside string values
+      const fixed = inner
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '')
+        .replace(/[\x00-\x1f]/g, '');
+      return '"' + fixed + '"';
+    });
+    return JSON.parse(cleaned);
+  } catch(e) {}
+
+  // Attempt 4: field extraction for critical fields
+  const out = {};
+  [
+    ['text_ai_score', /"text_ai_score"\s*:\s*(\d+)/],
+    ['text_ai_reason', /"text_ai_reason"\s*:\s*"((?:[^"\\]|\\.)*)"/],
+    ['connected', /"connected"\s*:\s*(true|false)/],
+    ['connectionType', /"connectionType"\s*:\s*"([^"]+)"/],
+    ['strength', /"strength"\s*:\s*"([^"]+)"/],
+    ['overallScore', /"overallScore"\s*:\s*(\d+)/],
+    ['overallLabel', /"overallLabel"\s*:\s*"([^"]+)"/],
+  ].forEach(function(pair) {
+    const m = s.match(pair[1]);
+    if (m) { try { out[pair[0]] = JSON.parse(m[1]); } catch(e2) { out[pair[0]] = m[1]; } }
+  });
+  // Extract matches array if present
+  const matchesM = s.match(/"matches"\s*:\s*(\[[\s\S]*?\](?=\s*[,}]))/);
+  if (matchesM) { try { out.matches = JSON.parse(matchesM[1]); } catch(e) {} }
+  if (Object.keys(out).length > 0) return out;
+  throw new Error('Could not parse JSON from Claude response');
 }
+
 function stripHtml(html) { return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(); }
 
 // ─────────────────────────────────────────────
@@ -2051,5 +2940,14 @@ initDB().then(() => {
     console.log(`Who's Behind That? server v${SERVER_VERSION} running on port ${PORT}`);
     if (!ANTHROPIC_KEY) console.warn('WARNING: ANTHROPIC_API_KEY not set — scoring endpoints will fail');
     if (!db) console.warn('WARNING: DATABASE_URL not set — history endpoints will be unavailable');
+
+    if (GROQ_API_KEY) {
+      console.log('Video transcription enabled (yt-dlp + Groq Whisper)');
+      ensureYtdlp().catch(e => console.warn('yt-dlp prefetch failed (will retry on first use):', e.message));
+    } else {
+      console.warn('GROQ_API_KEY not set — video transcription disabled');
+    }
+    console.log('Engine v2: triage=' + (TYPESAFE_API_KEY ? JEV_MODEL + ' (threshold ' + JEV_THRESHOLD + ')' : 'OFF — TYPESAFE_API_KEY not set, all entities go to the judge') +
+      ' | judge=' + getModel('deep_score') + ' | default=' + DEFAULT_MODEL + ' | fast=' + FAST_MODEL);
   });
 });
