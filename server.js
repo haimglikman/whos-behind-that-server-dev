@@ -5,6 +5,16 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
+// v2.0.2 — Screening redesign: Jev finds who the post is ABOUT, Claude
+//             decides who BENEFITS. Jev now asks only literal questions
+//             (mentioned? criticized? praised?) — its strength — instead of
+//             inferring benefit (its documented weakness). The judge also gets
+//             a names-only list of all other entities and may add unmentioned
+//             beneficiaries (e.g. opposition parties served by an attack on the
+//             government). Logging: translation status, Jev top-20 scores,
+//             judge top scores. Translation handles long articles (8K tokens,
+//             tolerant parsing).
+//
 // v2.0.1 — Fix: Opus 5.5 rejects forced tool calls ("tool_choice type tool
 //             not supported"). claudeFetch now adapts to tool_choice and
 //             sampling-param rejections, remembers them per model, and skips
@@ -302,7 +312,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '2.0.1';
+const SERVER_VERSION = '2.0.2';
 
 import express from 'express';
 import cors from 'cors';
@@ -2313,17 +2323,19 @@ Respond ONLY with valid JSON:
   const response = await claudeFetch(ANTHROPIC_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: getModel('translate'), max_tokens: 1500, temperature: 0, messages: [{ role: 'user', content: prompt }] })
+    body: JSON.stringify({ model: getModel('translate'), max_tokens: 8000, temperature: 0, messages: [{ role: 'user', content: prompt }] })
   });
   if (!response.ok) return null;
   const data = await response.json();
   const raw = data.content.map(c => c.text || '').join('').trim();
-  const clean = raw.replace(/```json|```/g, '').trim();
   try {
-    const result = JSON.parse(clean);
+    const result = extractJSON(raw);
     result._tokens = { input: data.usage?.input_tokens || 0, output: data.usage?.output_tokens || 0 };
     return result;
-  } catch(e) { return null; }
+  } catch(e) {
+    console.warn('[TRANSLATE] could not parse translation (stop_reason: ' + data.stop_reason + ')');
+    return null;
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -2388,50 +2400,43 @@ async function callJevChunked(state, questions, perRequest) {
   return { answers, tokens, model };
 }
 
-// ── Stage 2: screen every entity ──
+// ── Stage 2: Jev finds who the post is ABOUT (literal questions only) ──
+// Jev is strong on direct questions about the text and weak on indirect
+// inference, so it never judges "who benefits" — that is the judge's job.
 async function jevTriage(englishText, politicalContext, entities) {
   const state = { post: String(englishText).slice(0, 12000) };
   if (politicalContext) state.political_context = String(politicalContext).slice(0, 2000);
 
   const questions = {};
   entities.forEach((e, i) => {
-    const entity = { name: e.name, type: e.type || '', strategic_interest: String(e.interest || '').slice(0, 300) };
-    questions['s' + i] = {
+    const entity = { name: e.name, type: e.type || '' };
+    questions['m' + i] = {
       type: 'noul',
-      instructions: {
-        entity,
-        question: 'Would spreading `post` advance the agenda or strategic interests of `entity` — for example by promoting its narrative, praising it or its allies, or weakening its opponents?'
-      },
-      criteria: {
-        true: '`post` plausibly helps `entity`, directly or indirectly',
-        false: '`post` is unrelated to `entity`, or works against it'
-      }
+      instructions: { entity, question: 'Is `entity` mentioned, named, or clearly referred to in `post` — including its leaders, government, members, or forces?' },
+      criteria: { true: '`entity` appears in or is clearly referred to by `post`', false: '`post` does not refer to `entity`' }
     };
-    // Rival attacks are an indirect benefit — asked separately because Jev is weaker on indirect questions
-    questions['r' + i] = {
+    questions['a' + i] = {
       type: 'noul',
-      instructions: {
-        entity,
-        question: 'Does `post` attack, criticize, or discredit an opponent or rival of `entity`?'
-      },
-      criteria: {
-        true: '`post` targets a rival or opponent of `entity`',
-        false: '`post` does not target any rival of `entity`'
-      }
+      instructions: { entity, question: 'Does `post` criticize, attack, mock, or discredit `entity` or its policies?' },
+      criteria: { true: '`post` is critical of `entity`', false: '`post` is not critical of `entity`' }
+    };
+    questions['p' + i] = {
+      type: 'noul',
+      instructions: { entity, question: 'Does `post` praise, defend, or promote `entity` or its positions?' },
+      criteria: { true: '`post` supports `entity` or its positions', false: '`post` does not support `entity`' }
     };
   });
 
-  const { answers, tokens, model } = await callJevChunked(state, questions, 80);
+  const { answers, tokens, model } = await callJevChunked(state, questions, 90);
+  const val = k => (answers[k] && typeof answers[k].noul === 'number') ? answers[k].noul : 0;
 
   const scored = entities.map((e, i) => {
-    const s = answers['s' + i] && answers['s' + i].noul;
-    const r = answers['r' + i] && answers['r' + i].noul;
-    const sv = typeof s === 'number' ? s : 0;
-    const rv = typeof r === 'number' ? r : 0;
-    return { entity: e, serve: sv, rival: rv, score: Math.max(sv, rv) };
-  }).sort((a, b) => b.score - a.score);
+    const m = val('m' + i), a = val('a' + i), p = val('p' + i);
+    const score = Math.max(m, a, p);
+    const why = score === m ? 'mentioned' : score === a ? 'criticized' : 'praised';
+    return { entity: e, m, a, p, score, why };
+  }).sort((x, y) => y.score - x.score);
 
-  // Recall first: everything above threshold (capped), and never fewer than the minimum
   let shortlist = scored.filter(x => x.score >= JEV_THRESHOLD).slice(0, JEV_MAX_SHORTLIST);
   if (shortlist.length < JEV_MIN_SHORTLIST) shortlist = scored.slice(0, Math.min(JEV_MIN_SHORTLIST, scored.length));
 
@@ -2439,7 +2444,7 @@ async function jevTriage(englishText, politicalContext, entities) {
 }
 
 // ── Stage 3: Claude judges the shortlist ──
-function buildDeepPrompt(postText, entitySummaries) {
+function buildDeepPrompt(postText, entitySummaries, otherEntities) {
   return `You are a senior analyst specializing in geopolitical influence operations, information warfare, and social media manipulation, focused on the Israeli-Palestinian conflict and Israeli domestic politics.
 
 CORE QUESTION: Whose agenda does this post serve? Not whether it is true — who benefits from its spread.
@@ -2447,10 +2452,14 @@ CORE QUESTION: Whose agenda does this post serve? Not whether it is true — who
 POST:
 ${postText}
 
-CANDIDATE ENTITIES (pre-selected by a fast screening model — some may be false positives; score each on its merits and give low scores freely):
+CANDIDATE ENTITIES — the entities this post is about (pre-selected by a fast screening model; some may be false positives, so score each on its merits and give low scores freely):
 ${entitySummaries}
 Field key: N = public narrative, I = strategic interest, M = modus operandi, C = analyst comments.
-
+${otherEntities ? `
+OTHER ENTITIES (names only — not mentioned in the post, per the screening model):
+${otherEntities}
+IMPORTANT: The main beneficiary of a post is often NOT mentioned in it — e.g. a post attacking the government serves the opposition parties, and a critique of one camp's policy serves its rivals. If any entity on this list is a primary or secondary beneficiary, include it in your results using its id. Only include entities from this list when they are primary or secondary.
+` : ''}
 For EACH candidate entity, score three dimensions from 0 to 100:
 - interest: Would spreading this post advance the entity's strategic interest? Consider content (the message itself serves the entity) and context (the post attacks, discredits, or weakens the entity's rivals).
 - mo: Does the post's construction match the entity's known tactics and messaging style?
@@ -2477,7 +2486,7 @@ For alignment "none", leave why and missing empty.
 
 Also rate text_ai_score: 1-10 likelihood the text was AI-generated, with a one-sentence English text_ai_reason.
 
-Record your analysis by calling the record_alignment tool exactly once, with one entry per candidate entity. Do not answer in plain text.`;
+Record your analysis by calling the record_alignment tool exactly once, with one entry per candidate entity plus any beneficiary from the other-entities list. Do not answer in plain text.`;
 }
 
 const ALIGNMENT_TOOL = {
@@ -2490,7 +2499,7 @@ const ALIGNMENT_TOOL = {
       text_ai_reason: { type: 'string', description: 'One English sentence' },
       matches: {
         type: 'array',
-        description: 'One entry per candidate entity',
+        description: 'One entry per candidate entity, plus any primary/secondary beneficiary from the other-entities list',
         items: {
           type: 'object',
           properties: {
@@ -2510,12 +2519,13 @@ const ALIGNMENT_TOOL = {
   }
 };
 
-async function deepScore(postForJudge, entities) {
+async function deepScore(postForJudge, entities, others) {
   const entitySummaries = entities.map(formatEntityCompact).join('\n---\n');
+  const otherEntities = (others || []).map(e => `[${e.id}] ${e.name}`).join('\n');
   const dbPrompt = getPrompt('deep_score');
   const prompt = dbPrompt
-    ? interpolatePrompt(dbPrompt, { postText: postForJudge, entitySummaries })
-    : buildDeepPrompt(postForJudge, entitySummaries);
+    ? interpolatePrompt(dbPrompt, { postText: postForJudge, entitySummaries, otherEntities })
+    : buildDeepPrompt(postForJudge, entitySummaries, otherEntities);
   const maxTokens = Math.min(16000, 1500 + entities.length * 350);
 
   const response = await claudeFetch(ANTHROPIC_URL, {
@@ -2568,9 +2578,12 @@ async function scoreWithClaude(postText, entities) {
           (politicalContext ? `\n\nPOLITICAL CONTEXT (automatic — verify against the original):\n${politicalContext}` : '');
         inTok += (tr._tokens && tr._tokens.input) || 0;
         outTok += (tr._tokens && tr._tokens.output) || 0;
+        console.log('[TRANSLATE] ok — ' + postText.length + ' chars → ' + tr.translation.length + ' chars English');
+      } else {
+        console.warn('[TRANSLATE] failed — screening on the original text (less accurate)');
       }
     } catch (e) {
-      console.warn('Translation failed, using original text:', e.message);
+      console.warn('[TRANSLATE] failed — screening on the original text:', e.message);
     }
   }
 
@@ -2587,7 +2600,8 @@ async function scoreWithClaude(postText, entities) {
         shortlisted: shortlist.map(e => e.name),
         top: j.scored.slice(0, 8).map(x => ({ name: x.entity.name, score: Math.round(x.score * 100) / 100 }))
       };
-      console.log(`[JEV] ${entities.length} entities → ${shortlist.length} shortlisted (≥${JEV_THRESHOLD}): ${shortlist.map(e => e.name).join(', ')} | ${j.tokens} tokens`);
+      console.log(`[JEV] ${entities.length} entities → ${shortlist.length} shortlisted (≥${JEV_THRESHOLD}) | ${j.tokens} tokens`);
+      console.log('[JEV] top: ' + j.scored.slice(0, 20).map(x => `${x.entity.name} ${x.score.toFixed(2)} (${x.why})`).join(' | '));
     } catch (e) {
       console.warn('[JEV] screening failed — sending all entities to the judge:', e.message);
       triage = { used: false, screened: entities.length, error: e.message };
@@ -2595,12 +2609,14 @@ async function scoreWithClaude(postText, entities) {
   }
 
   // 3. Claude judges the shortlist
-  const judged = await deepScore(postForJudge, shortlist);
+  const shortIds = new Set(shortlist.map(e => String(e.id)));
+  const others = triage.used ? entities.filter(e => !shortIds.has(String(e.id))) : [];
+  const judged = await deepScore(postForJudge, shortlist, others);
   inTok += judged.tokens.input;
   outTok += judged.tokens.output;
 
   const byId = {};
-  shortlist.forEach(e => { byId[String(e.id)] = e; });
+  entities.forEach(e => { byId[String(e.id)] = e; });   // judge may add beneficiaries from the names-only list
   const clamp = v => Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
   const seen = new Set();
   const matches = [];
@@ -2619,6 +2635,8 @@ async function scoreWithClaude(postText, entities) {
     });
   });
   matches.sort((a, b) => b.pct - a.pct);
+  const top = matches.filter(m => m.alignment).concat(matches.filter(m => !m.alignment)).slice(0, 8);
+  console.log('[JUDGE] ' + (top.length ? top.map(m => `${m.name} ${m.pct}%${m.alignment ? ' ' + m.alignment : ''}${shortIds.has(String(m.id)) ? '' : ' (+not mentioned)'}`).join(' | ') : 'no matches'));
 
   const tas = parseInt(judged.result.text_ai_score, 10);
   console.log(`[TOKENS] scan: claude in=${inTok} out=${outTok} | jev in=${triage.tokens || 0} | judged ${shortlist.length}/${entities.length} entities | ${Date.now() - t0}ms`);
