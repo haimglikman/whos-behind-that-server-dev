@@ -1,3 +1,11 @@
+### v2.0.2 (server) | Admin: v2.21.0 | Client: v1.18.1
+- Screening redesign: Jev finds who the post is about; Claude decides who benefits
+  - Jev asks only literal questions (mentioned / criticized / praised) — its strength — instead of inferring benefit
+  - The judge also receives a names-only list of all other entities and adds unmentioned beneficiaries (e.g. opposition parties served by criticism of the government)
+- Logging per scan: translation status, Jev top-20 scores, judge top scores
+- Translation handles long articles (8K output tokens, tolerant JSON parsing)
+- package.json version 2.0.2
+
 ### v2.0.1 — bug fix (server) | Admin: v2.21.0 | Client: v1.18.1
 - Fixed: Opus 5.5 rejects forced tool calls ("tool_choice type tool not supported") — the judge now uses tool_choice auto with an explicit instruction to call the tool
 - Claude calls adapt to per-model restrictions (temperature, forced tools), remember them, and skip the failing attempt on later calls
