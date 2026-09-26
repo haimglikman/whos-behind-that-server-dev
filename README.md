@@ -1,3 +1,8 @@
+### v2.0.3 (server) | Admin: v2.21.0 | Client: v1.18.1
+- Judge score calibration: explicit 0–100 anchors per dimension; modus operandi redefined as content style (entity and its supporters); no score deflation for private or organic authors; expected ranges for primary (80+) and secondary (50–80)
+- Restores the meaning of the admin/client 85% display threshold (Opus scored clear alignments around 60 without anchors)
+- package.json version 2.0.3
+
 ### v2.0.2 (server) | Admin: v2.21.0 | Client: v1.18.1
 - Screening redesign: Jev finds who the post is about; Claude decides who benefits
   - Jev asks only literal questions (mentioned / criticized / praised) — its strength — instead of inferring benefit
