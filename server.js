@@ -5,6 +5,13 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
+// v2.0.3 — Judge score calibration: explicit 0-100 anchors per dimension,
+//             mo redefined as content style (entity AND its supporters), rule
+//             against deflating scores for organic/private authors, and
+//             expected interest ranges for primary (80+) / secondary (50-80).
+//             Restores the meaning of the admin/client 85% display threshold
+//             (Opus scored clear alignments ~60 without anchors).
+//
 // v2.0.2 — Screening redesign: Jev finds who the post is ABOUT, Claude
 //             decides who BENEFITS. Jev now asks only literal questions
 //             (mentioned? criticized? praised?) — its strength — instead of
@@ -312,7 +319,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '2.0.2';
+const SERVER_VERSION = '2.0.3';
 
 import express from 'express';
 import cors from 'cors';
@@ -2462,12 +2469,20 @@ IMPORTANT: The main beneficiary of a post is often NOT mentioned in it — e.g. 
 ` : ''}
 For EACH candidate entity, score three dimensions from 0 to 100:
 - interest: Would spreading this post advance the entity's strategic interest? Consider content (the message itself serves the entity) and context (the post attacks, discredits, or weakens the entity's rivals).
-- mo: Does the post's construction match the entity's known tactics and messaging style?
+- mo: Does the post's construction match how this entity AND its supporters typically communicate — rhetoric, framing devices, talking points, emotional register? This is about the content's style, not about who wrote it.
 - narrative: Does the post echo the entity's public narrative and talking points?
 
+SCORE CALIBRATION — use the full scale, applied to each dimension:
+- 90-100: unmistakable — the post's core message IS this entity's agenda, or it attacks this entity's main rivals in this entity's own terms.
+- 70-89: strong — the post clearly and substantially advances the entity.
+- 50-69: moderate — real but partial or diluted benefit.
+- 20-49: weak or incidental.
+- 0-19: none.
+Alignment is about whose agenda the CONTENT serves. Do not lower scores because the author seems to be a private individual, a journalist, or an organic supporter rather than an official account — an ordinary citizen's post that clearly advances a party's message aligns with that party just as much.
+
 Then set alignment:
-- "primary": the entity is a direct, main beneficiary.
-- "secondary": the entity benefits indirectly.
+- "primary": the entity is a direct, main beneficiary. A primary match should typically score 80+ on interest.
+- "secondary": the entity benefits indirectly. Typically 50-80 on interest.
 - "none": no meaningful benefit.
 At most 3 primary and 2 secondary.
 
