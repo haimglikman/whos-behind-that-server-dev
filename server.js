@@ -5,6 +5,12 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
+// v2.0.1 — Fix: Opus 5.5 rejects forced tool calls ("tool_choice type tool
+//             not supported"). claudeFetch now adapts to tool_choice and
+//             sampling-param rejections, remembers them per model, and skips
+//             the failing attempt on later calls. Judge prompt explicitly
+//             requires the tool; if the model answers in text, its JSON is parsed.
+//
 // v2.0.0 — New scoring engine: Jev screens, Claude judges.
 //             1. Hebrew/Arabic posts translated to English (fast model) — Jev's
 //                strongest language.
@@ -296,7 +302,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '2.0.0';
+const SERVER_VERSION = '2.0.1';
 
 import express from 'express';
 import cors from 'cors';
@@ -389,20 +395,41 @@ function getModel(name) {
   return fallback;
 }
 
-// Every Claude call goes through here: retries without sampling params if a
-// model rejects them, and retries once on rate-limit / overload.
+// Every Claude call goes through here. Some models reject sampling params
+// (temperature) or forced tool calls — we adapt once, remember it per model,
+// and skip the failing attempt on later calls. Also retries once on 429/529.
+const modelQuirks = {};   // model -> { noSampling: bool, noForcedTool: bool }
+function applyQuirks(body) {
+  const q = modelQuirks[body.model];
+  if (!q) return body;
+  if (q.noSampling) { delete body.temperature; delete body.top_p; delete body.top_k; }
+  if (q.noForcedTool && body.tool_choice && (body.tool_choice.type === 'tool' || body.tool_choice.type === 'any')) {
+    body.tool_choice = { type: 'auto' };
+  }
+  return body;
+}
 async function claudeFetch(url, opts) {
+  if (opts && typeof opts.body === 'string') {
+    opts = Object.assign({}, opts, { body: JSON.stringify(applyQuirks(JSON.parse(opts.body))) });
+  }
   let res = await fetch(url, opts);
-  if (res.status === 400 && opts && typeof opts.body === 'string') {
+  // Adapt to up to two different rejections (e.g. temperature, then tool_choice)
+  for (let i = 0; i < 2 && res.status === 400 && opts && typeof opts.body === 'string'; i++) {
     let msg = '';
     try { msg = JSON.stringify(await res.clone().json()); } catch (_) {}
-    if (/temperature|top_p|top_k/i.test(msg)) {
-      const body = JSON.parse(opts.body);
-      delete body.temperature; delete body.top_p; delete body.top_k;
-      console.warn('Model ' + body.model + ' rejected sampling params — retrying without them');
-      opts = Object.assign({}, opts, { body: JSON.stringify(body) });
-      res = await fetch(url, opts);
+    const body = JSON.parse(opts.body);
+    const q = modelQuirks[body.model] || (modelQuirks[body.model] = {});
+    if (/temperature|top_p|top_k/i.test(msg) && !q.noSampling) {
+      q.noSampling = true;
+      console.warn('Model ' + body.model + ' rejects sampling params — remembered, sending without them');
+    } else if (/tool_choice/i.test(msg) && !q.noForcedTool) {
+      q.noForcedTool = true;
+      console.warn('Model ' + body.model + ' rejects forced tool calls — remembered, using tool_choice auto');
+    } else {
+      break;
     }
+    opts = Object.assign({}, opts, { body: JSON.stringify(applyQuirks(body)) });
+    res = await fetch(url, opts);
   }
   if (res.status === 429 || res.status === 529) {
     await new Promise(r => setTimeout(r, 2500));
@@ -2450,7 +2477,7 @@ For alignment "none", leave why and missing empty.
 
 Also rate text_ai_score: 1-10 likelihood the text was AI-generated, with a one-sentence English text_ai_reason.
 
-Record your analysis with the record_alignment tool, with one entry per candidate entity.`;
+Record your analysis by calling the record_alignment tool exactly once, with one entry per candidate entity. Do not answer in plain text.`;
 }
 
 const ALIGNMENT_TOOL = {
@@ -2510,9 +2537,16 @@ async function deepScore(postForJudge, entities) {
   const data = await response.json();
   if (data.stop_reason === 'max_tokens') console.warn('Judge hit max_tokens (' + maxTokens + ') — result may be incomplete');
   const block = (data.content || []).find(c => c.type === 'tool_use' && c.name === 'record_alignment');
-  if (!block || !block.input) throw new Error('Judge returned no structured result (stop_reason: ' + data.stop_reason + ')');
+  let result = block && block.input;
+  if (!result) {
+    // Model answered in text instead of calling the tool — extract the JSON
+    const text = (data.content || []).filter(c => c.type === 'text').map(c => c.text || '').join('\n');
+    try { result = extractJSON(text); } catch (_) { result = null; }
+    if (result && Array.isArray(result.matches)) console.warn('Judge answered in text instead of the tool — parsed JSON fallback');
+    else throw new Error('Judge returned no structured result (stop_reason: ' + data.stop_reason + ')');
+  }
   return {
-    result: block.input,
+    result,
     tokens: { input: (data.usage && data.usage.input_tokens) || 0, output: (data.usage && data.usage.output_tokens) || 0 }
   };
 }
