@@ -5,6 +5,13 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
+// v2.0.4 — Jev usage monitoring: new jev_usage table; every Jev call (post
+//             screening + cluster pair checks, from admin and client) is
+//             recorded server-side. GET /stats returns jev.scan / jev.pairs
+//             (tokens, calls). fetch-and-analyze returns jevTokens per scan.
+//             Fix: actors column migrations now run after the actors table is
+//             created (startup failed on a brand-new empty database).
+//
 // v2.0.3 — Judge score calibration: explicit 0-100 anchors per dimension,
 //             mo redefined as content style (entity AND its supporters), rule
 //             against deflating scores for organic/private authors, and
@@ -319,7 +326,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '2.0.3';
+const SERVER_VERSION = '2.0.4';
 
 import express from 'express';
 import cors from 'cors';
@@ -526,8 +533,6 @@ async function initDB() {
     await db.query(`ALTER TABLE scans ADD COLUMN IF NOT EXISTS platform TEXT;`);
     await db.query(`ALTER TABLE scans ADD COLUMN IF NOT EXISTS input_tokens INTEGER DEFAULT 0;`);
     await db.query(`ALTER TABLE scans ADD COLUMN IF NOT EXISTS output_tokens INTEGER DEFAULT 0;`);
-    await db.query(`ALTER TABLE actors ADD COLUMN IF NOT EXISTS input_tokens INTEGER DEFAULT 0;`);
-    await db.query(`ALTER TABLE actors ADD COLUMN IF NOT EXISTS output_tokens INTEGER DEFAULT 0;`);
     await db.query(`
       CREATE TABLE IF NOT EXISTS actors (
         id TEXT PRIMARY KEY,
@@ -542,6 +547,8 @@ async function initDB() {
         url TEXT
       );
     `);
+    await db.query(`ALTER TABLE actors ADD COLUMN IF NOT EXISTS input_tokens INTEGER DEFAULT 0;`);
+    await db.query(`ALTER TABLE actors ADD COLUMN IF NOT EXISTS output_tokens INTEGER DEFAULT 0;`);
     await db.query(`
       CREATE TABLE IF NOT EXISTS clusters (
         id TEXT PRIMARY KEY,
@@ -593,6 +600,14 @@ async function initDB() {
         client_version TEXT NOT NULL,
         last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS jev_usage (
+        id SERIAL PRIMARY KEY,
+        ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        kind TEXT NOT NULL,
+        tokens INTEGER NOT NULL DEFAULT 0,
+        questions INTEGER NOT NULL DEFAULT 0,
+        model TEXT
       );
     `);
     // Seed default FAQs if table is empty
@@ -1056,7 +1071,7 @@ app.post('/fetch-and-analyze', async (req, res) => {
     const analysis = await scoreWithClaude(postData.text, entities);
     const responseUrl = postData.normalizedUrl || url;
     const tokens = analysis._tokens || { input: 0, output: 0 };
-    res.json({ success: true, platform, post: postData, analysis, url: responseUrl, inputTokens: tokens.input, outputTokens: tokens.output });
+    res.json({ success: true, platform, post: postData, analysis, url: responseUrl, inputTokens: tokens.input, outputTokens: tokens.output, jevTokens: (analysis.triage && analysis.triage.tokens) || 0 });
   } catch (err) {
     console.error('fetch-and-analyze error:', err.message);
     res.status(500).json({ error: err.message });
@@ -1216,7 +1231,12 @@ app.get('/stats', async (req, res) => {
       `SELECT SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, COUNT(*) as count
        FROM actors`
     );
-    const stats = { post: { admin: { in: 0, out: 0, count: 0 }, client: { in: 0, out: 0, count: 0 } }, actor: { in: 0, out: 0, count: 0 } };
+    const stats = { post: { admin: { in: 0, out: 0, count: 0 }, client: { in: 0, out: 0, count: 0 } }, actor: { in: 0, out: 0, count: 0 },
+                    jev: { scan: { tokens: 0, calls: 0 }, pairs: { tokens: 0, calls: 0 } } };
+    try {
+      const jevResult = await db.query(`SELECT kind, SUM(tokens) as tokens, COUNT(*) as calls FROM jev_usage GROUP BY kind`);
+      jevResult.rows.forEach(r => { if (stats.jev[r.kind]) { stats.jev[r.kind].tokens = parseInt(r.tokens) || 0; stats.jev[r.kind].calls = parseInt(r.calls) || 0; } });
+    } catch (e) { console.warn('jev stats query failed:', e.message); }
     scansResult.rows.forEach(r => {
       const src = r.source || 'admin';
       if (stats.post[src]) {
@@ -2407,6 +2427,13 @@ async function callJevChunked(state, questions, perRequest) {
   return { answers, tokens, model };
 }
 
+// Records every Jev call server-side (admin scans, client scans, cluster checks)
+function recordJevUsage(kind, tokens, questions, model) {
+  if (!db || !tokens) return;
+  db.query('INSERT INTO jev_usage (kind, tokens, questions, model) VALUES ($1, $2, $3, $4)', [kind, tokens, questions || 0, model || JEV_MODEL])
+    .catch(e => console.warn('jev_usage insert failed:', e.message));
+}
+
 // ── Stage 2: Jev finds who the post is ABOUT (literal questions only) ──
 // Jev is strong on direct questions about the text and weak on indirect
 // inference, so it never judges "who benefits" — that is the judge's job.
@@ -2609,6 +2636,7 @@ async function scoreWithClaude(postText, entities) {
     try {
       const j = await jevTriage(englishText, politicalContext, entities);
       shortlist = j.shortlist;
+      recordJevUsage('scan', j.tokens, j.questions, j.model);
       triage = {
         used: true, model: j.model, questions: j.questions, tokens: j.tokens,
         screened: entities.length,
@@ -2690,7 +2718,8 @@ async function jevGatePairs(pairs) {
       };
     });
     const state = 'Candidate pairs of social media posts from an investigation into coordinated political narratives (Israeli politics and the Israeli-Palestinian conflict).';
-    const { answers, tokens } = await callJevChunked(state, questions, 100);
+    const { answers, tokens, model } = await callJevChunked(state, questions, 100);
+    recordJevUsage('pairs', tokens, Object.keys(questions).length, model);
     // Missing answer → keep the pair (recall first)
     const kept = pairs.filter((_, i) => {
       const v = answers['c' + i] && answers['c' + i].noul;
