@@ -5,6 +5,12 @@
 // ─────────────────────────────────────────────
 // CHANGELOG
 // ─────────────────────────────────────────────
+// v2.0.5 — Per-scan model and Jev tracking: scoring results report the models
+//             used (judge / triage / translate); scans table gains jev_tokens
+//             and models columns; /history/save stores them (and fills the
+//             judge config for this server's scans when a client doesn't send
+//             models); /history/list returns them.
+//
 // v2.0.4 — Jev usage monitoring: new jev_usage table; every Jev call (post
 //             screening + cluster pair checks, from admin and client) is
 //             recorded server-side. GET /stats returns jev.scan / jev.pairs
@@ -326,7 +332,7 @@
 // v1.1.0  — Initial deployment: Express, CORS, health check, Anthropic key.
 // ─────────────────────────────────────────────
 
-const SERVER_VERSION = '2.0.4';
+const SERVER_VERSION = '2.0.5';
 
 import express from 'express';
 import cors from 'cors';
@@ -533,6 +539,8 @@ async function initDB() {
     await db.query(`ALTER TABLE scans ADD COLUMN IF NOT EXISTS platform TEXT;`);
     await db.query(`ALTER TABLE scans ADD COLUMN IF NOT EXISTS input_tokens INTEGER DEFAULT 0;`);
     await db.query(`ALTER TABLE scans ADD COLUMN IF NOT EXISTS output_tokens INTEGER DEFAULT 0;`);
+    await db.query(`ALTER TABLE scans ADD COLUMN IF NOT EXISTS jev_tokens INTEGER DEFAULT 0;`);
+    await db.query(`ALTER TABLE scans ADD COLUMN IF NOT EXISTS models JSONB;`);
     await db.query(`
       CREATE TABLE IF NOT EXISTS actors (
         id TEXT PRIMARY KEY,
@@ -1071,7 +1079,7 @@ app.post('/fetch-and-analyze', async (req, res) => {
     const analysis = await scoreWithClaude(postData.text, entities);
     const responseUrl = postData.normalizedUrl || url;
     const tokens = analysis._tokens || { input: 0, output: 0 };
-    res.json({ success: true, platform, post: postData, analysis, url: responseUrl, inputTokens: tokens.input, outputTokens: tokens.output, jevTokens: (analysis.triage && analysis.triage.tokens) || 0 });
+    res.json({ success: true, platform, post: postData, analysis, url: responseUrl, inputTokens: tokens.input, outputTokens: tokens.output, jevTokens: (analysis.triage && analysis.triage.tokens) || 0, models: analysis.models || null });
   } catch (err) {
     console.error('fetch-and-analyze error:', err.message);
     res.status(500).json({ error: err.message });
@@ -1262,14 +1270,17 @@ app.get('/stats', async (req, res) => {
 // ─────────────────────────────────────────────
 app.post('/history/save', async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Database not configured' });
-  const { id, ts, url, platform, source, deviceId, postText, overallScore, overallLabel, topMatches, textAI, hasImage, appVersion, serverVersion, fullResult, inputTokens, outputTokens } = req.body;
+  const { id, ts, url, platform, source, deviceId, postText, overallScore, overallLabel, topMatches, textAI, hasImage, appVersion, serverVersion, fullResult, inputTokens, outputTokens, jevTokens } = req.body;
+  let { models } = req.body;
   if (!id || !url) return res.status(400).json({ error: 'id and url are required' });
+  // Clients that don't report models: if the scan came from this server version, record its judge config
+  if (!models && serverVersion === SERVER_VERSION) models = { judge: getModel('deep_score'), triage: TYPESAFE_API_KEY ? JEV_MODEL : null, inferred: true };
   try {
     await db.query(
-      `INSERT INTO scans (id, ts, url, platform, source, device_id, post_text, overall_score, overall_label, top_matches, text_ai, has_image, app_version, server_version, comment, full_result, input_tokens, output_tokens)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, '', $15, $16, $17)
+      `INSERT INTO scans (id, ts, url, platform, source, device_id, post_text, overall_score, overall_label, top_matches, text_ai, has_image, app_version, server_version, comment, full_result, input_tokens, output_tokens, jev_tokens, models)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, '', $15, $16, $17, $18, $19)
        ON CONFLICT (id) DO NOTHING`,
-      [id, ts || new Date().toISOString(), url, platform || null, source || 'admin', deviceId || null, postText || '', overallScore || 0, overallLabel || '', topMatches || [], textAI || 5, hasImage || false, appVersion || '', serverVersion || '', fullResult ? JSON.stringify(fullResult) : null, inputTokens || 0, outputTokens || 0]
+      [id, ts || new Date().toISOString(), url, platform || null, source || 'admin', deviceId || null, postText || '', overallScore || 0, overallLabel || '', topMatches || [], textAI || 5, hasImage || false, appVersion || '', serverVersion || '', fullResult ? JSON.stringify(fullResult) : null, inputTokens || 0, outputTokens || 0, jevTokens || 0, models ? JSON.stringify(models) : null]
     );
     res.json({ success: true, id });
   } catch (err) {
@@ -1305,7 +1316,7 @@ app.get('/history/list', async (req, res) => {
     if (deviceId) { where.push(`device_id = $${idx++}`); params.push(deviceId); }
     const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
     const result = await db.query(
-      `SELECT id, ts, url, platform, source, device_id, post_text, overall_score, overall_label, top_matches, text_ai, has_image, app_version, server_version, comment, full_result, input_tokens, output_tokens
+      `SELECT id, ts, url, platform, source, device_id, post_text, overall_score, overall_label, top_matches, text_ai, has_image, app_version, server_version, comment, full_result, input_tokens, output_tokens, jev_tokens, models
        FROM scans ${whereClause} ORDER BY ts DESC LIMIT 500`,
       params
     );
@@ -1325,7 +1336,8 @@ app.get('/history/list', async (req, res) => {
       textAI: r.text_ai, hasImage: r.has_image,
       appVersion: r.app_version, serverVersion: r.server_version,
       comment: r.comment || '', fullResult: r.full_result,
-      inputTokens: r.input_tokens || 0, outputTokens: r.output_tokens || 0
+      inputTokens: r.input_tokens || 0, outputTokens: r.output_tokens || 0,
+      jevTokens: r.jev_tokens || 0, models: r.models || null
     }));
     let filtered = rows;
     if (alignmentType === 'primary') filtered = rows.filter(r => r.fullResult?.matches?.some(m => !m.secondary));
@@ -2609,12 +2621,13 @@ async function scoreWithClaude(postText, entities) {
   let inTok = 0, outTok = 0;
 
   // 1. English version for Jev; original + translation for the judge
-  let englishText = postText, politicalContext = '', postForJudge = postText;
+  let englishText = postText, politicalContext = '', postForJudge = postText, translated = false;
   if (isNonEnglish(postText)) {
     try {
       const tr = await translatePost(postText);
       if (tr && tr.translation) {
         englishText = tr.translation;
+        translated = true;
         politicalContext = tr.political_context || '';
         postForJudge = `ORIGINAL TEXT:\n${postText}\n\nENGLISH TRANSLATION:\n${tr.translation}` +
           (politicalContext ? `\n\nPOLITICAL CONTEXT (automatic — verify against the original):\n${politicalContext}` : '');
@@ -2688,6 +2701,11 @@ async function scoreWithClaude(postText, entities) {
     text_ai_reason: judged.result.text_ai_reason || '',
     matches,
     triage,
+    models: {
+      judge: getModel('deep_score'),
+      triage: triage.used ? (triage.model || JEV_MODEL) : null,
+      translate: translated ? getModel('translate') : null
+    },
     _tokens: { input: inTok, output: outTok }
   };
 }
