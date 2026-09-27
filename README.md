@@ -1,3 +1,7 @@
+### v2.0.5 (server) | Admin: v2.24.0 | Client: v1.18.1
+- Per-scan tracking: results report the models used (judge / screening / translation); scans table gains jev_tokens and models columns
+- /history/save stores them, filling in the server's judge config when a client doesn't send models; /history/list returns them
+
 ### v2.0.4 (server) | Admin: v2.23.0 | Client: v1.18.1
 - Jev usage monitoring: every Jev call (post screening + cluster checks, admin and client) recorded server-side in a new jev_usage table
 - GET /stats returns Jev tokens and calls; fetch-and-analyze returns jevTokens per scan
