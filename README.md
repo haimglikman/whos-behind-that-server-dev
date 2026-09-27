@@ -1,3 +1,8 @@
+### v2.0.4 (server) | Admin: v2.23.0 | Client: v1.18.1
+- Jev usage monitoring: every Jev call (post screening + cluster checks, admin and client) recorded server-side in a new jev_usage table
+- GET /stats returns Jev tokens and calls; fetch-and-analyze returns jevTokens per scan
+- Fixed: startup failed on a brand-new empty database (actors migration ran before table creation)
+
 ### v2.0.3 (server) | Admin: v2.21.0 | Client: v1.18.1
 - Judge score calibration: explicit 0–100 anchors per dimension; modus operandi redefined as content style (entity and its supporters); no score deflation for private or organic authors; expected ranges for primary (80+) and secondary (50–80)
 - Restores the meaning of the admin/client 85% display threshold (Opus scored clear alignments around 60 without anchors)
